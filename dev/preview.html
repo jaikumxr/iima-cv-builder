@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CV fidelity harness</title>
+<link rel="stylesheet" href="../css/cv.css">
+<style>
+  /* 1:1, no chrome — for diffing against reference/*.pdf */
+  html, body { margin: 0; padding: 0; background: #888; }
+  #mount .cv-page { margin: 0 auto; position: relative; }
+  #ruler { position: absolute; left: 0; right: 0; top: 297mm; border-top: 1px dashed #f00; }
+  #metrics {
+    font: 12px/1.5 ui-monospace, monospace; background: #111; color: #0f0;
+    margin: 0; padding: 10px 14px; white-space: pre;
+  }
+</style>
+</head>
+<body>
+<pre id="metrics">measuring…</pre>
+<div id="mount"></div>
+<script type="module">
+  import { renderCV, measureFit, ensureFonts, measureNaturalWidths } from '../js/render.js';
+  import { SAMPLES } from '../js/samples.js';
+
+  const params = new URLSearchParams(location.search);
+  const which = params.get('sample') || 'dark';
+  if (params.has('bare')) document.getElementById('metrics').style.display = 'none';
+  const mount = document.getElementById('mount');
+
+  const data = structuredClone(SAMPLES[which].data);
+  if (params.has('density')) data.theme.density = params.get('density');
+  if (params.has('border')) data.theme.border = params.get('border');
+  for (const k of ['label','vconn','eduInst','eduScore','year'])
+    if (params.has(k)) data.theme.cols = { ...data.theme.cols, [k]: Number(params.get(k)) };
+
+  /* ?stress=N pads the first bullet with N extra words, to exercise the
+     compression floors and the too-long flag without editing a sample. */
+  const stress = Number(params.get('stress') || 0);
+  if (stress > 0) {
+    const first = data.sections.find(x => x.entries?.length)?.entries[0].blocks[0].bullets[0];
+    if (first) first.text += ' ' + Array.from({ length: stress }, (_, i) => `extra${i}`).join(' ');
+  }
+
+  await ensureFonts();
+  const page = renderCV(data, mount);
+  page.appendChild(Object.assign(document.createElement('div'), { id: 'ruler' }));
+
+  const PX_MM = 96 / 25.4;
+  const mm = px => (px / PX_MM).toFixed(2);
+  const { usedMM, overMM } = measureFit(page);
+
+  /* The regression this guards: a bullet's marker must sit inside its cell.
+     If padding-left is lost, text-indent drags it left of the border. */
+  const worst = [...page.querySelectorAll('.cv-bullet')].reduce((acc, b) => {
+    const cellLeft = b.closest('.cv-cell').getBoundingClientRect().left;
+    const markerLeft = b.getBoundingClientRect().left - parseFloat(getComputedStyle(b).textIndent) * -1;
+    const range = document.createRange();
+    range.setStart(b, 0);
+    range.setEnd(b, 0);
+    const inset = b.getBoundingClientRect().left + parseFloat(getComputedStyle(b).paddingLeft)
+                + parseFloat(getComputedStyle(b).textIndent) - cellLeft;
+    return inset < acc.inset ? { inset, text: b.textContent.slice(0, 40) } : acc;
+  }, { inset: Infinity, text: '' });
+
+  /* How many bullets spill past one line? The reference CVs are authored so
+     that almost every bullet is exactly one line; a high count here means our
+     text is setting wider than Word's Garamond. */
+  const bullets = [...page.querySelectorAll('.cv-bullet')];
+  const wrapped = bullets.filter(b => {
+    const lh = parseFloat(getComputedStyle(b).lineHeight);
+    return Math.round(b.scrollHeight / lh) > 1;
+  }).length;
+
+  /* Which face is actually rendering? A silently-failed @font-face falls back
+     without any console error, and the only visible symptom is wrong widths. */
+  const probe = family => {
+    const c = document.createElement('canvas').getContext('2d');
+    c.font = `10pt ${family}`;
+    return c.measureText('Spearheaded the development of 2 Part quality standards').width.toFixed(2);
+  };
+  const loaded = [...document.fonts].map(f => `${f.family}/${f.weight}:${f.status}`).join('  ');
+
+  document.getElementById('metrics').textContent = [
+    `faces         ${loaded}`,
+    `width probe   CV Body=${probe('"CV Body"')}  Fallback=${probe('"CV Body Fallback"')}  serif=${probe('serif')}`,
+    `sample        ${which}   density=${data.theme.density}`,
+    `bullets       ${wrapped} of ${bullets.length} wrap  |  flagged too long: ${(page.dataset.tooLong || '').split(' ').filter(Boolean).length}`,
+    `single-line   ${(() => {
+        const bad = [...page.querySelectorAll('.cv-row--edu, .cv-row--interests')].flatMap(r =>
+          [...r.querySelectorAll('.cv-cell__in')].filter(c => {
+            const lh = parseFloat(getComputedStyle(c).lineHeight);
+            return lh && c.getBoundingClientRect().height > lh * 1.4;
+          }).map(c => c.textContent.slice(0, 28)));
+        return bad.length ? `${bad.length} WRAPPED: ${bad.join(' | ')}` : 'all single line';
+      })()}`,
+    `font uniform  ${[...page.querySelectorAll('.cv-row--edu .cv-cell__in, .cv-row--interests .cv-cell__in')]
+        .every(c => !c.style.fontSize) ? 'yes — no cell had its type shrunk' : 'NO — a cell was shrunk'}`,
+    `overflow      ${(() => {
+        const bad = [...page.querySelectorAll('.cv-cell__in')]
+          .filter(c => c.scrollWidth > c.clientWidth + 1)
+          .map(c => c.textContent.slice(0, 22));
+        return bad.length ? `${bad.length} BLEEDING: ${bad.join(' | ')}` : 'no cell bleeds its column';
+      })()}`,
+    `natural       ${Object.entries(measureNaturalWidths(page))
+        .map(([k, v]) => `${k}=${v == null ? '-' : v.toFixed(1)}`).join('  ')}`,
+    `fit scale     ${page.dataset.fitScale}${page.dataset.fitFailed === '1' ? '  FAILED (floor)' : ''}`,
+    `page used     ${usedMM.toFixed(1)}mm of 297mm  (${overMM > 0 ? `OVER by ${overMM.toFixed(1)}mm` : `${(-overMM).toFixed(1)}mm spare`})`,
+    `content width ${mm(page.querySelector('.cv-sheet').getBoundingClientRect().width)}mm  (expect 184.60)`,
+    `label col     ${mm(page.querySelector('.cv-cell--label').getBoundingClientRect().width)}mm  (expect 25.33)`,
+    /* A connector splits the label column into a strip plus a narrower label.
+       The two pieces plus the rule between them must still add up to exactly
+       one label column, or the bullets in a connector start further right than
+       the bullets above and below. */
+    `label align   ${(() => {
+        const edges = [...page.querySelectorAll('.cv-cell--label')].map(c => c.getBoundingClientRect().right);
+        const spread = Math.max(...edges) - Math.min(...edges);
+        return spread < 0.5
+          ? `all ${edges.length} label cells end at the same x`
+          : `MISALIGNED by ${spread.toFixed(2)}px (${mm(spread)}mm) across ${edges.length} label cells`;
+      })()}`,
+    `section bar   ${mm(page.querySelector('.cv-row--section .cv-cell').getBoundingClientRect().height)}mm  (expect 4.45, must be identical for all)`,
+    `bar heights   ${[...page.querySelectorAll('.cv-row--section .cv-cell')].map(n => mm(n.getBoundingClientRect().height)).join(' ')}`,
+    `bullet inset  ${worst.inset.toFixed(2)}px from cell border  (must be > 0)  "${worst.text}…"`,
+    `rules         ${[...new Set([...page.querySelectorAll('.cv-row,.cv-cell,.cv-sheet')]
+        .map(n => getComputedStyle(n).borderTopWidth + '/' + getComputedStyle(n).borderLeftWidth))].join(' ')}`,
+    `connector     ${(() => {
+        const c = page.querySelector('.cv-cell--vconn');
+        if (!c) return 'none';
+        const cb = c.getBoundingClientRect(), ib = c.firstElementChild.getBoundingClientRect();
+        return `left gap ${(ib.left - cb.left).toFixed(2)}px  right gap ${(cb.right - ib.right).toFixed(2)}px  (must match)`;
+      })()}`
+  ].join('\n');
+
+  document.title = `${which} — ${usedMM.toFixed(1)}mm`;
+</script>
+</body>
+</html>

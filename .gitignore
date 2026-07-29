@@ -1,0 +1,13 @@
+# OneDrive / OS
+desktop.ini
+.DS_Store
+Thumbs.db
+
+# tooling
+node_modules/
+*.log
+.vercel/
+
+# local notes
+HANDOFF.md
+
