@@ -21,6 +21,7 @@
 <script type="module">
   import { renderCV, measureFit, ensureFonts, measureNaturalWidths } from '../js/render.js';
   import { SAMPLES } from '../js/samples.js';
+  import { PAGE_MARGIN_MM, mastheadMM, bulletKey, bulletSize } from '../js/schema.js';
 
   const params = new URLSearchParams(location.search);
   const which = params.get('sample') || 'dark';
@@ -28,8 +29,23 @@
   const mount = document.getElementById('mount');
 
   const data = structuredClone(SAMPLES[which].data);
+  /* ?name= overrides the masthead string. Comparing masthead geometry against a
+     source PDF only works on the *same* string: ink extents depend on which
+     letters descend, so a name carrying a g, j, p or y and one without sit
+     differently against the table for reasons that are not the layout's. */
+  if (params.has('name')) data.header.name = params.get('name');
+  if (params.has('meta')) {
+    const [program, gender, age] = params.get('meta').split('|').map(s => s.trim());
+    Object.assign(data.header, { program, gender, age });
+  }
   if (params.has('density')) data.theme.density = params.get('density');
   if (params.has('border')) data.theme.border = params.get('border');
+  if (params.has('bullet')) data.theme.bullet = params.get('bullet');
+  /* ?split=1 turns on the three-part org bar for every experience section. The
+     samples ship with it off — it is a choice, not the format — so this is the
+     only way to exercise the centred role against a ruler. */
+  if (params.has('split'))
+    for (const s of data.sections) if (s.kind === 'experience') s.splitBar = params.get('split') !== '0';
   for (const k of ['label','vconn','eduInst','eduScore','year'])
     if (params.has(k)) data.theme.cols = { ...data.theme.cols, [k]: Number(params.get(k)) };
 
@@ -43,6 +59,11 @@
 
   await ensureFonts();
   const page = renderCV(data, mount);
+
+  /* Any `--token=value` param overrides that custom property on the page, so a
+     candidate can be measured without editing the stylesheet. Applied after
+     render so it survives whatever renderCV set. */
+  for (const [k, v] of params) if (k.startsWith('--')) page.style.setProperty(k, v);
   page.appendChild(Object.assign(document.createElement('div'), { id: 'ruler' }));
 
   const PX_MM = 96 / 25.4;
@@ -83,8 +104,22 @@
   document.getElementById('metrics').textContent = [
     `faces         ${loaded}`,
     `width probe   CV Body=${probe('"CV Body"')}  Fallback=${probe('"CV Body Fallback"')}  serif=${probe('serif')}`,
-    `sample        ${which}   density=${data.theme.density}`,
+    `sample        ${which}   density=${data.theme.density}  bullet=${bulletKey(data)}pt`,
     `bullets       ${wrapped} of ${bullets.length} wrap  |  flagged too long: ${(page.dataset.tooLong || '').split(' ').filter(Boolean).length}`,
+    /* The marker's size, which the DOCX spends as numbering.xml's w:sz. It must
+       never exceed the body's 10pt: the marker's inline box is line-height x
+       its own font-size, so a larger dot makes every bullet line taller than
+       the rest of the CV while Word ignores it — ~10mm on a full page. */
+    `bullet marker ${(() => {
+        const b = page.querySelector('.cv-bullet');
+        if (!b) return 'no bullets';
+        const px = parseFloat(getComputedStyle(b, '::before').fontSize);
+        const body = parseFloat(getComputedStyle(b).fontSize);
+        const want = bulletSize(data);
+        const ok = Math.abs(px - body * want.em) < 0.05 && px <= body + 0.05;
+        return `${(px * 72 / 96).toFixed(2)}pt  (want ${want.pt}, w:sz=${want.sz})  ` +
+               `${ok ? 'ok — at or under body size' : 'WRONG — must be <= body size'}`;
+      })()}`,
     `single-line   ${(() => {
         const bad = [...page.querySelectorAll('.cv-row--edu, .cv-row--interests')].flatMap(r =>
           [...r.querySelectorAll('.cv-cell__in')].filter(c => {
@@ -103,8 +138,77 @@
       })()}`,
     `natural       ${Object.entries(measureNaturalWidths(page))
         .map(([k, v]) => `${k}=${v == null ? '-' : v.toFixed(1)}`).join('  ')}`,
-    `fit scale     ${page.dataset.fitScale}${page.dataset.fitFailed === '1' ? '  FAILED (floor)' : ''}`,
+    /* Type size is fixed. Anything other than 1 here means something has
+       started scaling the CV to make it fit, which the IIMA format does not
+       permit — overflow is reported, never absorbed. */
+    `type scale    ${(() => {
+        const s = getComputedStyle(page).getPropertyValue('--fs-scale').trim();
+        const body = getComputedStyle(page.querySelector('.cv-bullet') || page).fontSize;
+        const ok = s === '1' && page.dataset.fitScale === '1';
+        return `${ok ? 'FIXED at 1' : `SCALED to ${s} — MUST BE 1`}  ·  body ${body} (expect ${(10 * 96 / 72).toFixed(2)}px = 10pt)`;
+      })()}${page.dataset.fitFailed === '1' ? '  ·  page OVERFLOWS' : ''}`,
     `page used     ${usedMM.toFixed(1)}mm of 297mm  (${overMM > 0 ? `OVER by ${overMM.toFixed(1)}mm` : `${(-overMM).toFixed(1)}mm spare`})`,
+    /* The masthead band: top margin to the table. Its height is a control now
+       (schema.js MASTHEAD, 8.44mm reference A to 12.80mm reference B), so this is checked
+       against the CV's own setting rather than a literal. The logo fills it. */
+    `masthead      ${(() => {
+        const p = page.getBoundingClientRect();
+        const s = page.querySelector('.cv-sheet').getBoundingClientRect();
+        const band = mastheadMM(data);
+        const top = mm(s.top - p.top);
+        const l = page.querySelector('.cv-head__logo')?.getBoundingClientRect();
+        const logo = l
+          ? `logo ${mm(l.width)}x${mm(l.height)}mm top ${mm(l.top - p.top)}mm right ${mm(p.right - l.right)}mm ` +
+            `(want ${band.toFixed(2)}sq @${PAGE_MARGIN_MM}, ${PAGE_MARGIN_MM} in from the right)`
+          : 'no logo';
+        return `table top ${top}mm (want ${(PAGE_MARGIN_MM + band).toFixed(2)})  ·  ${logo}`;
+      })()}`,
+    /* Is the masthead flush in the margin corner, and does its ink still clear
+       the table? Both are about *ink*, not element boxes: the box is the font's
+       em square, so it neither reaches the cap line nor touches the bar, and it
+       cannot see either question.
+
+       The two figures behave differently. `ink top` is a target — it must be
+       the margin, 12.70, and this is the assertion that the name is not hanging
+       above the page's text area the way both source CVs let it. `-> table` is
+       only a floor: it must stay above 0, and its actual value depends on which
+       letters descend, so it is not comparable between two names.
+
+       Canvas ink runs ~0.15mm shallower than the rasterised page (antialiasing,
+       hinting), so these read a hair generous. They are regression guards; the
+       calibration is done on pixels and in Word. HANDOFF §2 has both. */
+    `masthead clr  ${(() => {
+        const p = page.getBoundingClientRect();
+        const s = page.querySelector('.cv-sheet').getBoundingClientRect();
+        const id = page.querySelector('.cv-head__id');
+        const nameEl = page.querySelector('.cv-head__name');
+        if (!id || !nameEl) return 'no masthead';
+        const ctx = document.createElement('canvas').getContext('2d');
+        const metrics = el => {
+          const cs = getComputedStyle(el);
+          ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+          return ctx.measureText(el.textContent);
+        };
+        /* Each span on its own font — the name is 20pt and the meta 14pt, so
+           measuring the joined string at one size lets the meta's pipes decide
+           the answer and the figure stops depending on the name at all. */
+        const spans = [...id.children].filter(c => c.textContent);
+        const m0 = metrics(nameEl);
+        /* the line box is line-height tall and the font's content area is
+           centred in it, so the baseline sits half-leading + ascent down.
+           The strut is the tallest span's — the 20pt name. */
+        const lh = parseFloat(getComputedStyle(id).lineHeight);
+        const content = m0.fontBoundingBoxAscent + m0.fontBoundingBoxDescent;
+        const baseline = (id.getBoundingClientRect().top - p.top)
+                       + (lh - content) / 2 + m0.fontBoundingBoxAscent;
+        const inkTop = baseline - Math.max(...spans.map(el => metrics(el).actualBoundingBoxAscent));
+        const inkLeft = (id.getBoundingClientRect().left - p.left) - m0.actualBoundingBoxLeft;
+        const descent = Math.max(...spans.map(el => metrics(el).actualBoundingBoxDescent));
+        const gap = (s.top - p.top) - (baseline + descent);
+        return `ink top ${(inkTop / PX_MM).toFixed(2)}mm  left ${(inkLeft / PX_MM).toFixed(2)}mm  ` +
+               `(both want ${PAGE_MARGIN_MM})  ·  -> table ${(gap / PX_MM).toFixed(2)}mm must be > 0  ` +
+               `"${id.textContent.slice(0, 24)}"`;
+      })()}`,
     `content width ${mm(page.querySelector('.cv-sheet').getBoundingClientRect().width)}mm  (expect 184.60)`,
     `label col     ${mm(page.querySelector('.cv-cell--label').getBoundingClientRect().width)}mm  (expect 25.33)`,
     /* A connector splits the label column into a strip plus a narrower label.
@@ -120,6 +224,43 @@
       })()}`,
     `section bar   ${mm(page.querySelector('.cv-row--section .cv-cell').getBoundingClientRect().height)}mm  (expect 4.45, must be identical for all)`,
     `bar heights   ${[...page.querySelectorAll('.cv-row--section .cv-cell')].map(n => mm(n.getBoundingClientRect().height)).join(' ')}`,
+    /* A split bar's role must sit on the same centre Word's tab stop uses: half
+       the row's *text* area, which starts one left cell margin in and ends one
+       right cell margin short — not half the row's box.
+
+       A role whose organisation already runs past that centre is `butted`
+       instead, hard against the end of the organisation, because that is what
+       Word does with a tab stop behind the pen (render.js placeBarRoles). A
+       butted role is a CV that needs shortening, not a layout fault — but the
+       count must stay honest, so it is reported rather than folded into the
+       centring figure it would otherwise wreck. */
+    `bar role      ${(() => {
+        const roles = [...page.querySelectorAll('.cv-bar__role')];
+        if (!roles.length) return 'none — ?split=1 draws them';
+        const butted = roles.filter(r => r.dataset.butted);
+        let worstOff = 0, tightest = { mm: Infinity, text: '' };
+        for (const r of roles) {
+          const row = r.closest('.cv-row');
+          const rb = row.getBoundingClientRect(), b = r.getBoundingClientRect();
+          const padL = parseFloat(getComputedStyle(row.querySelector('.cv-bar__main')).paddingLeft);
+          const padR = parseFloat(getComputedStyle(row.querySelector('.cv-bar__dates')).paddingRight);
+          const target = rb.left + padL + (rb.width - padL - padR) / 2;
+          if (!r.dataset.butted) worstOff = Math.max(worstOff, Math.abs((b.left + b.right) / 2 - target));
+          for (const [cls, side] of [['.cv-bar__main', 'org'], ['.cv-bar__dates', 'dates']]) {
+            const inner = row.querySelector(`${cls} .cv-cell__in`);
+            if (!inner || !inner.textContent.trim()) continue;
+            const range = document.createRange();
+            range.selectNodeContents(inner);
+            const t = range.getBoundingClientRect();
+            const gap = side === 'org' ? b.left - t.right : t.left - b.right;
+            if (gap < tightest.mm) tightest = { mm: gap, text: `${side} of "${r.textContent.slice(0, 28)}"` };
+          }
+        }
+        return `${roles.length - butted.length} centred (worst off-centre ${mm(worstOff)}mm, want 0.00)  ·  ` +
+               `${butted.length} butted onto the org, as Word does  ·  ` +
+               `tightest clearance ${mm(tightest.mm)}mm to the ${tightest.text}` +
+               (tightest.mm < -0.05 ? '  — OVERLAPPING' : '');
+      })()}`,
     `bullet inset  ${worst.inset.toFixed(2)}px from cell border  (must be > 0)  "${worst.text}…"`,
     `rules         ${[...new Set([...page.querySelectorAll('.cv-row,.cv-cell,.cv-sheet')]
         .map(n => getComputedStyle(n).borderTopWidth + '/' + getComputedStyle(n).borderLeftWidth))].join(' ')}`,

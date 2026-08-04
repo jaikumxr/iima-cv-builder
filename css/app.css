@@ -129,6 +129,9 @@ input.in { width: 100%; min-width: 0; }
 .in--sec { font-weight: 600; }
 .in--year, .in--score { max-width: 78px; text-align: center; }
 .in--dates { max-width: 190px; }
+/* capped so the organisation, which is usually the longer string, keeps the
+   larger share of the entry row */
+.in--role { max-width: 260px; }
 .in--deg { max-width: 150px; }
 .in--label { max-width: 240px; }
 
@@ -268,7 +271,13 @@ textarea.ta {
   box-shadow: 0 10px 34px rgba(0, 0, 0, .45);
 }
 
-/* the one-page cut line */
+/* Where page 1 ends.
+   Type is never scaled to force a fit any more (HANDOFF §7), so a CV running
+   long is an ordinary state rather than an impossible one — and the preview is
+   one continuous sheet, so without this the page just gets taller and looks
+   like it still fits. A hairline was not enough: everything past the cut is
+   shaded and labelled. */
+#preview .cv-page { position: relative; }
 #preview .cv-page::after {
   content: "";
   position: absolute;
@@ -276,7 +285,58 @@ textarea.ta {
   border-top: 1px dashed #d33;
   pointer-events: none;
 }
-#preview .cv-page { position: relative; }
+/* Shading only, no caption: the band sits over the author's own text, and a
+   label across it obscures the very rows they need to read to decide what to
+   cut. The fit meter carries the words. */
+#preview .cv-page.is-over::after {
+  bottom: 0;
+  border-top: 2px dashed #d33;
+  background: repeating-linear-gradient(135deg,
+    rgba(221, 51, 51, .06) 0 6mm, rgba(221, 51, 51, .12) 6mm 12mm);
+}
+/* #preview sits inside #printRoot, so without this the marker would print */
+@media print {
+  #preview .cv-page::after { content: none !important; }
+}
+
+/* ---------- gridlines overlay ----------
+   Word's own view grid plus the page-margin rectangle, so the preview can be
+   held against a Word window and compared edge for edge. It exists to answer
+   one question: is anything — the name's capitals, the logo, the table's left
+   border — sitting outside the margins?
+
+   Drawn as a pseudo-element on .cv-page rather than as a real node, so it adds
+   nothing to the DOM the exporters walk and cannot affect measurement. It lives
+   in app.css, not cv.css: cv.css is the CV, and this is a builder affordance.
+
+   `inset: 0` is the whole sheet, not the content area: an absolutely positioned
+   child resolves against its containing block's **padding** box, and .cv-page
+   has no border, so its padding box is the full 210x297. The margin rectangle
+   is therefore drawn by pulling the outline inwards from that, which is exactly
+   what a negative outline-offset does.
+
+   Grid step is Word's default drawing grid, 0.13in. Both the grid's origin and
+   the rectangle are the margin, which is also where Word starts its grid. */
+.show-grid #preview .cv-page::before {
+  --grid-step: 3.3mm;
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, rgba(40, 90, 170, .22) 0 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(40, 90, 170, .22) 0 1px, transparent 1px);
+  background-size: var(--grid-step) 100%, 100% var(--grid-step);
+  background-position: var(--pg-margin) 0, 0 var(--pg-margin);
+  outline: 1px solid rgba(200, 40, 40, .75);
+  outline-offset: calc(-1 * var(--pg-margin));
+}
+/* Belt and braces: .show-grid sits on #printRoot, which is exactly what does
+   print, so the overlay has to be switched off explicitly. */
+@media print {
+  .show-grid #preview .cv-page::before { content: none !important; }
+}
 
 /* clickable metric affordance — screen only, never printed */
 #preview .cv-metric { cursor: pointer; border-radius: 2px; }
@@ -318,6 +378,23 @@ textarea.ta {
 @media (max-width: 1100px) {
   .layout { grid-template-columns: 1fr; }
   .pane--editor { border-right: 0; border-bottom: 1px solid var(--line); }
+}
+
+/* credit — builder chrome, and hidden at print with the rest of the pane.
+   Sticky rather than simply last: .pane--editor is the scroll container and the
+   section list under it is long, so a footer in normal flow only appears after
+   scrolling the entire editor. Needs an opaque background, or the editor
+   content scrolls through it. */
+.credit {
+  position: sticky;
+  bottom: 0;
+  margin-top: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink-dim);
+  font-size: 12px;
+  text-align: center;
 }
 
 /* column-width sliders */

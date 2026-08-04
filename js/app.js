@@ -1,10 +1,11 @@
 /* app.js — wiring: toolbar, preview, fit meter, print. */
 
-import { SECTION_CATALOGUE, LAYOUT_PRESETS, THEMES, DENSITIES, BORDERS, COLUMNS, COLUMN_STEP, defaultColumns, applyLayout, mkSection, blankCV } from './schema.js';
+import { SECTION_CATALOGUE, LAYOUT_PRESETS, THEMES, DENSITIES, BORDERS, BULLET_SIZES, COLUMNS, COLUMN_STEP, MASTHEAD, densityKey, bulletKey, defaultColumns, mastheadMM, applyLayout, mkSection, blankCV } from './schema.js';
 import { SAMPLES } from './samples.js';
 import { createStore, loadSaved, clearSaved, exportJSON, importJSON } from './store.js';
 import { createEditor, locate } from './editor.js';
 import { renderCV, measureFit, ensureFonts, measureNaturalWidths, tooLongBullets } from './render.js';
+import { buildDocx, measureAtFullSize, loadLogo } from './docx.js';
 
 const $ = sel => document.querySelector(sel);
 
@@ -49,6 +50,8 @@ function normalise(cv) {
   }
   for (const s of out.sections) {
     s.entries ??= []; s.blocks ??= []; s.rows ??= []; s.items ??= [];
+    // role postdates the first CVs written with this builder
+    for (const e of s.entries) e.role ??= '';
     for (const b of [...s.blocks, ...s.entries.flatMap(e => e.blocks || [])]) {
       if (b.type === 'cluster') for (const g of b.groups) { g.bullets ??= []; g.years ??= []; }
       else { b.bullets ??= []; b.years ??= []; }
@@ -86,23 +89,15 @@ function updateFit() {
   const meter = $('#fitMeter');
   const bar = $('#fitBar');
   const ratio = usedMM / PAGE_H_MM;
-  const scale = Number(currentPage.dataset.fitScale || 1);
-  const failed = currentPage.dataset.fitFailed === '1';
 
   bar.style.width = `${Math.min(100, ratio * 100)}%`;
 
-  if (failed) {
-    bar.className = 'fit-bar is-over';
-    meter.className = 'fit-label is-over';
-    meter.textContent = `Still ${overMM.toFixed(1)} mm over at the ${Math.round(scale * 100)}% floor — cut ~${Math.ceil(overMM / LINE_MM)} line(s)`;
-    return;
-  }
-  if (scale < 0.999) {
-    bar.className = 'fit-bar is-tight';
-    meter.className = 'fit-label is-tight';
-    meter.textContent = `Fits on one page · type scaled to ${Math.round(scale * 100)}% to make room`;
-    return;
-  }
+  /* Type is never scaled, so there is no "shrunk to fit" state to report —
+     overflow is the author's to fix, and the only honest thing to show is how
+     much has to go. The meter says it in mm; the shaded band on the page says
+     it in place, because the preview is one continuous sheet and a CV that
+     runs long otherwise just looks like a slightly taller page. */
+  currentPage.classList.toggle('is-over', overMM > 0);
   bar.className = overMM > 0 ? 'fit-bar is-over' : (ratio > 0.94 ? 'fit-bar is-tight' : 'fit-bar');
   meter.className = overMM > 0 ? 'fit-label is-over' : 'fit-label';
   meter.textContent = overMM > 0
@@ -139,11 +134,13 @@ const layoutSel = $('#layoutSelect');
 const themeSel = $('#themeSelect');
 const densitySel = $('#densitySelect');
 const borderSel = $('#borderSelect');
+const bulletSel = $('#bulletSelect');
 
 fillSelect(layoutSel, Object.entries(LAYOUT_PRESETS), store.get().layout || 'custom');
 fillSelect(themeSel, Object.entries(THEMES), store.get().theme.id || 'ink');
-fillSelect(densitySel, Object.entries(DENSITIES), store.get().theme.density || 'normal');
+fillSelect(densitySel, Object.entries(DENSITIES), densityKey(store.get()));
 fillSelect(borderSel, Object.entries(BORDERS), store.get().theme.border || 'thin');
+fillSelect(bulletSel, Object.entries(BULLET_SIZES), bulletKey(store.get()));
 
 /* ---------- column-width sliders ---------- */
 
@@ -181,6 +178,70 @@ const colInputs = new Map();
     colInputs.set(col.key, { input, out });
   }
 })();
+
+/* ---------- masthead band ----------
+   The height of the band between the top margin and the table, in mm. The name
+   and the logo are always flush to that band's top-left corner, so this is the
+   only masthead dimension left to choose: a taller band is a bigger logo and
+   more air under the name, a shorter one buys page height. The ends are the two
+   source CVs. See schema.js. */
+
+const gapUI = (function buildGapSlider() {
+  const row = document.createElement('label');
+  row.className = 'col-row';
+  row.title = 'Height of the masthead — the band above the table';
+
+  const name = document.createElement('span');
+  name.className = 'col-name';
+  name.textContent = 'Height';
+
+  const input = document.createElement('input');
+  Object.assign(input, { type: 'range', min: MASTHEAD.min, max: MASTHEAD.max, step: MASTHEAD.step });
+
+  const out = document.createElement('output');
+  out.className = 'col-out';
+
+  input.addEventListener('input', () => {
+    out.textContent = Number(input.value).toFixed(2);
+    // one undo step per gesture, not per pixel — same as the column sliders
+    store.update(d => { d.theme.masthead = Number(input.value); }, { history: false });
+    drawPreview();
+  });
+
+  row.append(name, input, out);
+  $('#gapSlider').appendChild(row);
+  return { input, out };
+})();
+
+function syncGap() {
+  const g = mastheadMM(store.get());
+  gapUI.input.value = g;
+  gapUI.out.textContent = g.toFixed(2);
+}
+
+$('#gapReset').addEventListener('click', () => {
+  store.update(d => { d.theme.masthead = MASTHEAD.default; });
+  syncGap();
+  drawPreview();
+});
+
+/* ---------- gridlines ----------
+   A view aid, not CV data: it reproduces Word's own grid and the page-margin
+   rectangle over the preview so the two can be compared edge for edge. Kept
+   out of the CV entirely — it is a class on the preview root, drawn by
+   pseudo-elements in app.css, so it cannot reach the PDF or the DOCX and does
+   not survive an export. Remembered per browser rather than per CV. */
+const GRID_KEY = 'cvbuilder.gridlines';
+const gridBox = $('#tgGrid');
+
+function syncGrid() {
+  $('#printRoot').classList.toggle('show-grid', gridBox.checked);
+}
+gridBox.checked = localStorage.getItem(GRID_KEY) === '1';
+gridBox.addEventListener('change', () => {
+  localStorage.setItem(GRID_KEY, gridBox.checked ? '1' : '0');
+  syncGrid();
+});
 
 function syncColumns() {
   const cols = { ...defaultColumns(), ...(store.get().theme.cols || {}) };
@@ -236,6 +297,11 @@ densitySel.addEventListener('change', () => {
 
 borderSel.addEventListener('change', () => {
   store.update(d => { d.theme.border = borderSel.value; });
+  drawPreview();
+});
+
+bulletSel.addEventListener('change', () => {
+  store.update(d => { d.theme.bullet = bulletSel.value; });
   drawPreview();
 });
 
@@ -304,6 +370,53 @@ $('#btnImport').addEventListener('click', async () => {
 $('#btnExpand').addEventListener('click', () => editor.expandAll());
 $('#btnCollapse').addEventListener('click', () => editor.collapseAll());
 
+/* ---------- DOCX ----------
+   Measured at a fixed 10pt rather than read off the preview, because the
+   preview may be scaled and the DOCX never is. */
+
+const download = (blob, filename) => {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+async function writeDocx(cv, measured) {
+  const { bytes, ext } = await loadLogo(cv);
+  const name = (cv.header.name || 'cv').toLowerCase().replace(/\s+/g, '-');
+  download(buildDocx(cv, measured, bytes, ext), `${name}.docx`);
+}
+
+$('#btnDocx').addEventListener('click', async () => {
+  const btn = $('#btnDocx');
+  btn.disabled = true;
+  try {
+    const cv = store.get();
+    const measured = measureAtFullSize(cv);
+
+    if (measured.overMM > 0) {
+      $('#docxWarnBody').textContent =
+        `At 10 pt this CV is ${measured.usedMM.toFixed(1)} mm tall — ` +
+        `${measured.overMM.toFixed(1)} mm past the page. That is about ` +
+        `${Math.ceil(measured.overMM / LINE_MM)} line(s) to cut.`;
+      $('#docxWarn').showModal();
+      return;   // the dialog's buttons take it from here
+    }
+    await writeDocx(cv, measured);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#docxWarnCancel').addEventListener('click', () => $('#docxWarn').close());
+$('#docxWarnGo').addEventListener('click', async () => {
+  $('#docxWarn').close();
+  const cv = store.get();
+  await writeDocx(cv, measureAtFullSize(cv));
+});
+
 $('#btnPrint').addEventListener('click', () => {
   if (!localStorage.getItem('iima-cv-builder:print-hint')) {
     $('#printHint').showModal();
@@ -321,10 +434,12 @@ function syncToolbar() {
   const cv = store.get();
   layoutSel.value = cv.layout || 'custom';
   themeSel.value = cv.theme.id || 'ink';
-  densitySel.value = cv.theme.density || 'normal';
+  densitySel.value = densityKey(cv);
   borderSel.value = cv.theme.border || 'thin';
+  bulletSel.value = bulletKey(cv);
   $('#tgMetrics').checked = !!cv.theme.autoMetrics;
   syncColumns();
+  syncGap();
 }
 
 /* ---------- click a metric in the preview to mute/unmute it ---------- */
@@ -367,6 +482,8 @@ window.addEventListener('beforeprint', () => { printRoot.style.setProperty('--sc
 window.addEventListener('afterprint', layoutPreview);
 
 syncColumns();
+syncGap();
+syncGrid();
 editor.render();
 
 /* First paint uses whatever metrics are available; once the real faces are in,

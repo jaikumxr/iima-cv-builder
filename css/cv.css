@@ -7,19 +7,29 @@
 
 /* ---------- fonts ---------- */
 
-/* Monotype Garamond — the exact face the source .docx was authored in, so
-   line breaks here match Word's. Regular + Bold only; the CV uses no italics.
+/* Garamond — and it must be *this* Garamond.
+
+   The DOCX writes `w:ascii="Garamond"`, exactly as the source .docx does, and
+   Word resolves that name against the system: on Windows that is GARA.TTF,
+   whose family name is plainly "Garamond". The project previously bundled
+   Monotype's `GaramondMTW04` web cut instead, which is a different design —
+   measured 0.48% narrower over a full bullet (146.40mm vs 147.11mm at 10pt).
+   The preview therefore fitted bullets to a width Word did not have, and the
+   export wrapped lines the preview showed on one line.
+
+   So the rule: whatever face is bundled here must be the one Word will pick
+   for the name docx.js writes. Regular + Bold only; the CV uses no italics.
    EB Garamond stays behind it in the stack as a glyph-coverage fallback. */
 @font-face {
   font-family: "CV Body";
-  src: url("../assets/fonts/GaramondMT-Regular.ttf") format("truetype");
+  src: url("../assets/fonts/Garamond-Regular.ttf") format("truetype");
   font-weight: 400;
   font-style: normal;
   font-display: block;
 }
 @font-face {
   font-family: "CV Body";
-  src: url("../assets/fonts/GaramondMT-Bold.ttf") format("truetype");
+  src: url("../assets/fonts/Garamond-Bold.ttf") format("truetype");
   font-weight: 700;
   font-style: normal;
   font-display: block;
@@ -31,17 +41,32 @@
   font-style: normal;
   font-display: block;
 }
-/* The masthead is the only thing set in Centaur and it is always bold, so the
-   real Bold is the only face declared — nothing ever asks for Regular, and
-   Centaur.ttf is no longer shipped. This replaces the synthesised bold the CV
-   used to lean on, which is also why --name-stroke is now 0. */
+/* The bullet is Word's own: the Symbol font's F0B7, at body size. Garamond's
+   own U+2022 is a much smaller dot — 0.92mm against a 1.33mm cap height — which
+   is what made the bullets read as undersized in the PDF, in Word and on screen
+   alike.
+
+   Not bundled: it is `local("Symbol")`, the font every Windows install has had
+   since 3.1 and the one Word resolves `w:ascii="Symbol"` against, so the
+   preview draws the identical glyph the export asks for. The unicode-range
+   confines it to that single codepoint, so the family cannot leak into any
+   other text, and F0B7 is in the private use area precisely because Symbol is
+   a symbol-encoded font — asking for U+2022 in it silently falls through to the
+   next family and gives Garamond's small dot back. */
 @font-face {
-  font-family: "CV Name";
-  src: url("../assets/fonts/CentaurMT-Bold.otf") format("opentype");
-  font-weight: 700;
-  font-style: normal;
-  font-display: block;
+  font-family: "CV Bullet";
+  src: local("Symbol");
+  unicode-range: U+F0B7;
 }
+
+/* The masthead used to be Centaur MT Bold — that is what both source CVs use
+   and it was measured out of their header1.xml. It is now Garamond too, at the
+   CV author's instruction: one family for the whole document. CentaurMT-Bold.otf
+   is still in assets/fonts but nothing loads it, so it costs no request; put
+   the @font-face and --font-name back if the masthead ever returns to Centaur.
+
+   This is also why nothing here synthesises bold any more: Garamond ships a
+   real Bold, which is already declared above as "CV Body" 700. */
 
 /* ---------- design tokens ---------- */
 
@@ -52,26 +77,59 @@
   --pg-margin: 12.7mm;
   --content-w: 184.6mm;          /* 10466 twip */
 
-  /* type — every run in the source doc is sz=20 (10pt). No exceptions. */
+  /* type — Garamond throughout, at three sizes and no others:
+       name  20pt (sz=40) · header details 14pt (sz=28) · everything else 10pt.
+     The body's 10pt is the source document's own — literally no other w:sz
+     appears in it. The two masthead sizes are the author's, replacing the
+     23pt/15pt Centaur the references use. */
   --font-body: "CV Body", "CV Body Fallback", Garamond, Georgia, serif;
-  --font-name: "CV Name", "CV Body", Garamond, serif;
+  --font-name: var(--font-body);
   --fs-base: 10pt;
-  --fs-scale: 1;                 /* driven by fitToOnePage(); never authored by hand */
+  /* PINNED AT 1, PERMANENTLY. Type size is part of the IIMA format, not a
+     variable the layout may spend to make something fit. This used to be
+     binary-searched down to 0.78 whenever a CV overflowed; that behaviour is
+     gone and must not come back. The token survives only because the mm
+     constants below were authored as multiples of it. */
+  --fs-scale: 1;
   --fs-body: calc(var(--fs-base) * var(--fs-scale));
-  --fs-name: 23pt;               /* sz=46 */
-  --name-weight: 700;            /* the real Centaur MT Bold face */
-  --name-stroke: 0;              /* was compensating for synthetic bold; a real
-                                    bold needs no stroking on top */
-  --fs-meta: 15pt;               /* sz=30 */
-  --lh-body: 1.23;               /* measured: 246 twip per line at 10pt */
+  --fs-name: 20pt;               /* sz=40 */
+  --name-weight: 700;            /* Garamond Bold, a real drawn face */
+  --name-stroke: 0;              /* nothing synthesises bold any more */
+  --fs-meta: 14pt;               /* sz=28 */
+  /* Set per-CV by render.js from schema.js's DENSITIES. This default is single
+     spacing — SINGLE_LH, i.e. what Word's `w:lineRule="auto"` actually renders
+     for Garamond 10pt, measured off Word rather than computed. It is NOT 1.23:
+     that was right only while the DOCX wrote `lineRule="exact"` and we chose
+     the pitch ourselves. Never author a value below this one — Word would
+     report the CV as tighter than single, which review rejects. */
+  --lh-body: 1.258;
 
-  /* header block: table is page-anchored at tblpY=1445twip = 1.003in from
-     the page edge, i.e. 0.503in below the top margin. The logo is exactly
-     0.5in square (457200 EMU) and its right edge is flush to the margin. */
-  --header-h: 12.8mm;
-  --logo-size: 12.7mm;
-  --logo-top: 0.12mm;            /* posOffsetV 4445 EMU */
-  --name-baseline: 9.6mm;        /* from top of header block */
+  /* Masthead band: top margin to the table's top edge. Set per-CV by render.js
+     from schema.js's MASTHEAD, whose ends are the two source CVs (8.44mm
+     reference A, 12.80mm reference B) and whose default is 9.98mm. docx.js spends the same
+     number as tblpY, so the DOCX and the preview cannot drift apart. */
+  --header-h: 9.98mm;
+
+  /* The logo fills the band: flush to the top margin, flush to the right one,
+     square. Both source CVs instead hang it *above* the margin — reference A's
+     9.98mm square starts at 10.72mm, i.e. 1.98mm out — and that overhang is
+     exactly what this replaces. Sizing it to the band is what keeps its bottom
+     off the table once its top can no longer float upwards. */
+  --logo-size: var(--header-h);
+  --logo-top: 0;
+
+  /* The name's line-height, and the only thing setting where its baseline
+     lands. NOT a baseline position: `.cv-head__id` is absolutely positioned at
+     the block's top, so the baseline sits at half-leading + ascent, and
+     **changing this moves the baseline by only half as much**.
+
+     Both of these are computed per render by render.js's mastheadFlush(), not
+     authored, because both are properties of the actual string rather than of
+     the font: the target is the name's *ink* flush to the margin corner, and a
+     leading "J" hangs left of its origin while an accented capital rises above
+     the cap line. The defaults here are only what a bare stylesheet shows. */
+  --name-lh: 2.4mm;
+  --name-shift: 0mm;             /* ink-left correction; see mastheadFlush() */
 
   /* fixed row heights — the source doc has these at 19..202 twip, i.e. wildly
      inconsistent. Standardised here and never allowed to vary. */
@@ -94,6 +152,11 @@
   /* bullets: ind left=176 hanging=153 twip */
   --bullet-indent: calc(3.1mm * var(--fs-scale));
   --bullet-hang: calc(2.7mm * var(--fs-scale));
+  /* The marker's size, as a multiple of the body's. Set per-CV by render.js
+     from schema.js's BULLET_SIZES, whose rungs are 10pt (1) and 9.5pt (0.95),
+     and whose `sz` the DOCX writes into numbering.xml so both draw the same
+     dot. Never above 1 — see BULLET_SIZES for what that costs. */
+  --bullet-fs: 1;
 
   /* rules — overridden per-CV by theme.border (see BORDERS in schema.js).
      Integer px only: Chrome snaps borders to whole device pixels, so a
@@ -110,8 +173,6 @@
   --ink-label: #000000;
   --fill-body: #FFFFFF;
   --ink-body: #000000;
-  --section-transform: uppercase;
-  --section-spacing: 0;
 }
 
 /* ---------- theme variants ---------- */
@@ -120,24 +181,24 @@
 .cv-page.theme-ink {
   --fill-section: #0D0D0D;
   --ink-section: #FFFFFF;
-  --section-transform: uppercase;
 }
 
-/* Variant B — "Slate": mid-grey bar, black small-caps.
+/* Variant B — "Slate": mid-grey bar, black text.
    Fills read off the source PDF's filled rectangles: the
    full-width heading bars are #BFBFBF and the label column is #D9D9D9 —
-   i.e. one step darker than Ink's, not lighter. */
+   i.e. one step darker than Ink's, not lighter.
+
+   A theme sets colour, and nothing else. Slate used to set
+   `font-variant-caps: small-caps` on its headings and org bars, which is a
+   genuinely different cut of Garamond — so the same CV changed *typeface*
+   when you changed theme, and only in the preview, since docx.js knows
+   nothing about it. Headings are plain capitals in every theme now, applied
+   to the text by schema.js's sectionTitle() so the export matches. */
 .cv-page.theme-slate {
   --fill-section: #BFBFBF;
   --ink-section: #000000;
   --fill-bar: #BFBFBF;
   --fill-label: #D9D9D9;
-  --section-transform: none;
-  --section-spacing: 0.2pt;
-}
-.cv-page.theme-slate .cv-section__title,
-.cv-page.theme-slate .cv-bar__main {
-  font-variant-caps: small-caps;
 }
 
 /* Variant C — "Charcoal": mid-grey bar, white text, lighter label column. */
@@ -184,11 +245,14 @@
 }
 .cv-head__id {
   position: absolute;
-  left: 0;
+  /* Shifted right by however far the first capital's ink hangs left of its
+     own origin, so the *ink* — not the text origin — starts on the margin. */
+  left: var(--name-shift);
   top: 0;
-  /* baseline is pinned rather than flowed, so the row can never shift when
-     the name length or font metrics change */
-  line-height: var(--name-baseline);
+  /* Pinned rather than flowed, so the row cannot shift when the name's length
+     changes. It is still font-metric dependent — half-leading plus ascent —
+     which is why --name-lh is calibrated by measuring ink, not derived. */
+  line-height: var(--name-lh);
   white-space: nowrap;
   font-family: var(--font-name);
   font-weight: var(--name-weight);
@@ -252,10 +316,12 @@
   background: var(--fill-section);
   color: var(--ink-section);
 }
+/* Capitals come from the text itself (schema.js sectionTitle), not from
+   text-transform: a CSS transform is invisible to docx.js, so the preview read
+   PROFESSIONAL EXPERIENCE while the exported Word file said Professional
+   Experience. Do not reintroduce one here. Body size, like everything else. */
 .cv-section__title {
   font-weight: 700;
-  text-transform: var(--section-transform);
-  letter-spacing: var(--section-spacing);
   line-height: 1;
 }
 /* org folded into the heading row (inlineBar) */
@@ -288,6 +354,35 @@
   padding-right: var(--pad-r);
   white-space: nowrap;
 }
+
+/* The role, when the section's bar is split three ways (schema.js barParts).
+   In Word this is a centre tab stop at half the cell's *text* width, so the
+   same centre has to be used here: the row's text area starts --pad-l in and
+   ends --pad-r short, which puts its middle half that difference right of the
+   row's own middle. Getting this from `justify-content` instead would centre it
+   in whatever the organisation and the dates left over, which is a different x
+   for every CV and matches Word on none of them.
+
+   Absolutely positioned, so it is not a flex item and cannot change the row's
+   height or push the dates off the end. It sits over the bar's fill; a very
+   long organisation will run under it, which is the same collision Word shows
+   by pushing the role past its tab stop. */
+.cv-row--bar,
+.cv-row--section { position: relative; }
+.cv-bar__role {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(50% + (var(--pad-l) - var(--pad-r)) / 2);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+.cv-row--bar > .cv-bar__role { color: var(--ink-bar); }
+.cv-row--section > .cv-bar__role { color: var(--ink-section); }
 
 /* ---------- label column ---------- */
 
@@ -379,12 +474,20 @@
   -webkit-hyphens: none;
   hyphens: none;
 }
+/* Word's bullet: Symbol F0B7, matching numbering.xml's marker rPr. Only the
+   marker is Symbol — the bullet's text is Garamond like everything else.
+
+   At most body size, never above: the marker's inline box is `line-height x its
+   own font-size`, so an oversized marker silently makes every bullet line
+   taller than the rest of the CV. --bullet-fs is the CV's setting and its two
+   rungs are 1 and 0.95; the 1.05em this once carried cost ~10mm of page. */
 .cv-page .cv-bullet::before {
-  content: "\2022";
+  content: "\F0B7";
   display: inline-block;
   width: var(--bullet-hang);
   text-indent: 0;
-  font-size: 1.05em;
+  font-family: "CV Bullet", var(--font-body);
+  font-size: calc(1em * var(--bullet-fs));
 }
 
 /* a plain (bulletless) line, e.g. the interests row */

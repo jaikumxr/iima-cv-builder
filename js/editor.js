@@ -145,12 +145,12 @@ export function createEditor({ mount, store, onPreview }) {
 
     for (const b of group.bullets) {
       const ta = textarea(b.text, e => commitText(d => { const f = locate(d, b.id); if (f) f.node.text = e.target.value; }),
-        'Bullet text — Ctrl+B to bold a selection');
+        'Bullet text');
 
       const n = countMetrics(b.text);
       const warn = h('span', {
         class: 'warn',
-        title: 'Reduce text — this point will not fit on one line'
+        title: 'Too long — will not fit on one line'
       }, '⚠');
       warn.hidden = !tooLong.has(b.id);
 
@@ -183,12 +183,12 @@ export function createEditor({ mount, store, onPreview }) {
        out of a connector. */
     const head = h('div', { class: 'grp-head' },
       dragHandle(inCluster ? 'Drag to reorder, or out of this connector' : 'Drag to reorder'),
-      h('input', { class: 'in in--label', value: group.label || '', placeholder: 'Sub-heading (e.g. Business Impact)', onInput: setField(group.id, 'label') }),
+      h('input', { class: 'in in--label', value: group.label || '', placeholder: 'Sub-heading', onInput: setField(group.id, 'label') }),
       section.showYear && !perBullet
         ? h('input', { class: 'in in--year', value: group.year || '', placeholder: 'Year', onInput: setField(group.id, 'year') })
         : null,
       section.showYear
-        ? h('label', { class: 'chk', title: 'One year per bullet instead of one for the whole group' },
+        ? h('label', { class: 'chk', title: 'One year per bullet' },
             h('input', {
               type: 'checkbox', checked: perBullet,
               onChange: e => commit(d => {
@@ -239,20 +239,19 @@ export function createEditor({ mount, store, onPreview }) {
       h('div', { class: 'grp-head' },
         dragHandle(),
         h('span', { class: 'tag' }, 'connector'),
-        h('input', { class: 'in in--label', value: cluster.label || '', placeholder: 'Connector label (e.g. Responsibilities)', onInput: setField(cluster.id, 'label') }),
+        h('input', { class: 'in in--label', value: cluster.label || '', placeholder: 'Connector label', onInput: setField(cluster.id, 'label') }),
         h('span', { class: 'row-tools' },
           btn('⇤', 'icon', () => commit(d => {
             // ungroup: splice the cluster's groups back in where it sat
             const f = locate(d, cluster.id);
             if (f) f.arr.splice(f.index, 1, ...f.node.groups);
-          }), 'Ungroup — split back into separate sub-headings'),
+          }), 'Ungroup'),
           ...moveBtns(cluster.id), delBtn(cluster.id, 'connector group'))
       ),
       inner,
       h('div', { class: 'add-row' },
         btn('+ Sub-heading', 'add', () =>
-          commit(d => { const c = locate(d, cluster.id); if (c) c.node.groups.push(mkGroup('New sub-heading')); })),
-        h('span', { class: 'hint' }, 'or drag an existing sub-heading in'))
+          commit(d => { const c = locate(d, cluster.id); if (c) c.node.groups.push(mkGroup('New sub-heading')); })))
     );
   }
 
@@ -289,13 +288,13 @@ export function createEditor({ mount, store, onPreview }) {
         commit(d => { locate(d, ownerId).node.blocks.push(mkGroup('New sub-heading')); })),
       btn('+ Vertical connector', 'add add--alt', () =>
         commit(d => { locate(d, ownerId).node.blocks.push(mkCluster()); }),
-        'A vertical label spanning two or more sub-headings'),
+        'One vertical label spanning two or more sub-headings'),
       plainTail() >= 2
         ? btn('⇥ Weld last 2', 'add add--alt', () => commit(d => {
             const arr = locate(d, ownerId).node.blocks;
             const taken = arr.splice(arr.length - 2, 2);
             arr.push(mkCluster('Responsibilities', taken));
-          }), 'Group the last two sub-headings under one vertical connector')
+          }), 'Weld the last two sub-headings under one connector')
         : null
     ));
     return list;
@@ -307,10 +306,18 @@ export function createEditor({ mount, store, onPreview }) {
     const wrap = h('div', { class: 'entries' });
 
     for (const entry of section.entries) {
+      /* Organisation, designation and dates are three fields whichever way the
+         bar is drawn. With `split bar` off the designation simply runs on after
+         the organisation (schema.js barParts), so switching between the two
+         arrangements never costs anything typed. */
       wrap.appendChild(h('div', { class: 'entry', dataset: { id: entry.id } },
         h('div', { class: 'entry-head' },
           dragHandle(),
-          h('input', { class: 'in', value: entry.org || '', placeholder: 'Organisation (Duration) – Role', onInput: setField(entry.id, 'org') }),
+          h('input', { class: 'in', value: entry.org || '', placeholder: 'Organisation', onInput: setField(entry.id, 'org') }),
+          h('input', {
+            class: 'in in--role', value: entry.role || '', placeholder: 'Designation',
+            onInput: setField(entry.id, 'role')
+          }),
           h('input', { class: 'in in--dates', value: entry.dates || '', placeholder: '(Mon YYYY – Mon YYYY)', onInput: setField(entry.id, 'dates') }),
           h('span', { class: 'row-tools' }, ...moveBtns(entry.id), delBtn(entry.id, 'entry'))
         ),
@@ -357,15 +364,14 @@ export function createEditor({ mount, store, onPreview }) {
   function interestsBody(section) {
     return h('div', { class: 'interests' },
       h('div', { class: 'edu-row' },
-        h('input', { class: 'in in--deg', value: section.label || '', placeholder: 'Label (Hobbies)', onInput: setField(section.id, 'label') }),
+        h('input', { class: 'in in--deg', value: section.label || '', placeholder: 'Label', onInput: setField(section.id, 'label') }),
         h('input', {
-          class: 'in', value: (section.items || []).join(', '), placeholder: 'Comma-separated: Guitar, Drums, Chess',
+          class: 'in', value: (section.items || []).join(', '), placeholder: 'Guitar, Drums, Chess',
           onInput: e => commitText(d => {
             locate(d, section.id).node.items = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
           })
         })
-      ),
-      h('p', { class: 'hint' }, 'Each item becomes an equal-width cell across the row.'));
+      ));
   }
 
   const BODIES = { experience: experienceBody, list: listBody, education: educationBody, interests: interestsBody };
@@ -396,6 +402,13 @@ export function createEditor({ mount, store, onPreview }) {
               type: 'checkbox', checked: !!section.inlineBar,
               onChange: e => commit(d => { locate(d, section.id).node.inlineBar = e.target.checked; })
             }), 'inline bar')
+        : null,
+      section.kind === 'experience'
+        ? h('label', { class: 'chk', title: 'Organisation left, designation centred, dates right' },
+            h('input', {
+              type: 'checkbox', checked: !!section.splitBar,
+              onChange: e => commit(d => { locate(d, section.id).node.splitBar = e.target.checked; })
+            }), 'split bar')
         : null,
       h('span', { class: 'sec-warn warn', hidden: true, title: 'Points in this section need shortening' }, ''),
       h('span', { class: 'row-tools' },

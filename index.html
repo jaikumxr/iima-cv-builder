@@ -26,22 +26,27 @@
       <span>Theme</span>
       <select id="themeSelect"></select>
     </label>
-    <label class="tb-field" title="Line height. Drop a step if you're a few mm over one page.">
-      <span>Density</span>
+    <label class="tb-field" title="Single is the tightest allowed">
+      <span>Line spacing</span>
       <select id="densitySelect"></select>
     </label>
-    <label class="tb-field" title="Thickness of every rule in the CV grid. Applies uniformly.">
+    <label class="tb-field" title="Thickness of every rule in the grid">
       <span>Borders</span>
       <select id="borderSelect"></select>
+    </label>
+    <label class="tb-field" title="Size of the bullet dot, for the whole CV">
+      <span>Bullet</span>
+      <select id="bulletSelect"></select>
     </label>
   </div>
 
   <div class="tb-group tb-toggles">
-    <label class="chk" title="Bold numbers, percentages, currency and ratios automatically"><input type="checkbox" id="tgMetrics"> metrics</label>
+    <label class="chk" title="Bold numbers, percentages, money and ratios automatically"><input type="checkbox" id="tgMetrics"> metrics</label>
+    <label class="chk" title="Word's grid and the page margins. Never exported."><input type="checkbox" id="tgGrid"> gridlines</label>
   </div>
 
   <div class="tb-group tb-right">
-    <select id="sampleSelect" class="tb-select" title="Load a reference CV">
+    <select id="sampleSelect" class="tb-select" title="Load an example CV">
       <option value="">Load sample…</option>
       <option value="dark">Dark headings</option>
       <option value="light">Light headings</option>
@@ -49,6 +54,7 @@
     <button type="button" id="btnNew" class="tb-btn">New</button>
     <button type="button" id="btnImport" class="tb-btn">Import</button>
     <button type="button" id="btnExport" class="tb-btn">Export</button>
+    <button type="button" id="btnDocx" class="tb-btn">Download DOCX</button>
     <button type="button" id="btnPrint" class="tb-btn tb-btn--primary">Download PDF</button>
   </div>
 </header>
@@ -59,17 +65,25 @@
       <button type="button" id="btnExpand" class="tb-btn tb-btn--sm">Expand all</button>
       <button type="button" id="btnCollapse" class="tb-btn tb-btn--sm">Collapse all</button>
       <button type="button" id="btnReset" class="tb-btn tb-btn--sm" title="Discard the CV saved in this browser">Reset saved data</button>
-      <span class="hint hint--inline">Ctrl+B bolds a selection · Ctrl+Z undoes</span>
+      <span class="hint hint--inline">Tip: Ctrl+B bolds a selection · Ctrl+Z undoes</span>
     </div>
     <div class="pane-block col-panel">
       <h2>Column widths
-        <button type="button" id="colFit" class="tb-btn tb-btn--sm" title="Set every column to the width its widest cell actually needs">Fit to content</button>
-        <button type="button" id="colReset" class="tb-btn tb-btn--sm" title="Back to the proportions in the source document">Reset</button>
+        <button type="button" id="colFit" class="tb-btn tb-btn--sm" title="Set every column to the width its widest cell needs">Fit to content</button>
+        <button type="button" id="colReset" class="tb-btn tb-btn--sm" title="Back to the default proportions">Reset</button>
       </h2>
       <div id="colSliders" class="col-sliders"></div>
-      <p class="hint">The education <em>detail</em> column takes whatever the others give up — narrow <em>School</em> to widen it.</p>
+    </div>
+    <div class="pane-block col-panel">
+      <h2>Masthead
+        <button type="button" id="gapReset" class="tb-btn tb-btn--sm" title="Back to the default height">Reset</button>
+      </h2>
+      <div id="gapSlider" class="col-sliders"></div>
     </div>
     <div id="editor"></div>
+    <!-- Builder chrome, so it sits inside the editor pane and is hidden at
+         print with the rest of it. It must never reach the CV itself. -->
+    <footer class="credit">Made with ❤️ by Jai Kumar (PGP batch of 2025–27)</footer>
   </aside>
 
   <section class="pane pane--preview" id="previewScroll">
@@ -87,17 +101,31 @@
 
 <dialog id="printHint" class="dlg">
   <h2>Saving as PDF</h2>
-  <p>The browser print dialog is about to open. It produces a true vector PDF — sharp, selectable text at the exact A4 size, which is what recruiters' ATS tools want.</p>
+  <p>In the print dialog that opens:</p>
   <ol>
-    <li>Set <strong>Destination</strong> to <em>Save as PDF</em> — not <em>Microsoft&nbsp;Print&nbsp;to&nbsp;PDF</em>, which sits next to it in the list and rasterises the page, giving you a picture of a CV that nobody can select or search</li>
-    <li>Set <strong>Margins</strong> to <em>None</em> (the CV carries its own 0.5&nbsp;inch margins)</li>
-    <li>Turn <strong>Headers and footers</strong> off</li>
-    <li>Leave <strong>Background graphics</strong> on, or the heading bars print white</li>
+    <li><strong>Destination</strong>: <em>Save as PDF</em> — not <em>Microsoft&nbsp;Print&nbsp;to&nbsp;PDF</em>, which rasterises the page</li>
+    <li><strong>Margins</strong>: <em>None</em> — the CV carries its own</li>
+    <li><strong>Headers and footers</strong>: off</li>
+    <li><strong>Background graphics</strong>: on, or the heading bars print white</li>
   </ol>
   <label class="chk"><input type="checkbox" id="printHintSkip"> Don't show this again</label>
   <div class="dlg-actions">
     <button type="button" class="tb-btn" onclick="document.getElementById('printHint').close()">Cancel</button>
     <button type="button" class="tb-btn tb-btn--primary" id="printHintGo">Open print dialog</button>
+  </div>
+</dialog>
+
+<!-- Nothing scales type to make a CV fit, in either output. If it needs more
+     than one page at full size, say so rather than quietly handing over a
+     two-page CV. -->
+<dialog id="docxWarn" class="dlg">
+  <h2>This will run to two pages</h2>
+  <p id="docxWarnBody"></p>
+  <p>Garamond stays at 10&nbsp;pt — the size the format specifies — so the only
+     way to reach one page is to cut text.</p>
+  <div class="dlg-actions">
+    <button type="button" class="tb-btn" id="docxWarnCancel">Cancel</button>
+    <button type="button" class="tb-btn tb-btn--primary" id="docxWarnGo">Export anyway</button>
   </div>
 </dialog>
 

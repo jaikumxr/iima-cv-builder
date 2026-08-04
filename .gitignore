@@ -10,4 +10,10 @@ node_modules/
 
 # local notes
 HANDOFF.md
+VERIFY.md
+
+# real CVs. dev/docx.html?cv=<url> needs the file inside the served root, so a
+# real person's CV gets copied in to test the bullet fit — the invented samples
+# cannot exercise it (HANDOFF §8). That data is not ours to publish.
+*.cv.json
 

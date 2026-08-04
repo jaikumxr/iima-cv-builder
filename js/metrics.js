@@ -38,16 +38,25 @@ function isMetric(match) {
 }
 
 /**
- * Turn authored text into HTML.
+ * Split authored text into styled runs. This is where "what is bold" is
+ * decided, once — renderText draws them as HTML and docx.js writes the same
+ * runs as OOXML, so the preview and the Word export can never disagree about
+ * emphasis. Splitting the metric regex across two implementations is exactly
+ * the drift this avoids.
+ *
  * @param {string} text   raw text, may contain **manual bold**
  * @param {number[]} mute indices of auto-matches to leave unbolded
  * @param {boolean} auto  whether auto metric detection is on
- * @returns {string} HTML
+ * @returns {Array<{text: string, bold: boolean, metric: number|null, muted: boolean}>}
  */
-export function renderText(text, mute = [], auto = true) {
+export function textRuns(text, mute = [], auto = true) {
   const muted = new Set(mute);
-  const out = [];
+  const runs = [];
   let autoIndex = 0;
+
+  const add = (t, extra) => {
+    if (t) runs.push({ text: t, bold: false, metric: null, muted: false, ...extra });
+  };
 
   // split on **manual bold** first; manual always wins over auto
   const parts = String(text ?? '').split(/(\*\*[^*]+\*\*)/g);
@@ -56,12 +65,12 @@ export function renderText(text, mute = [], auto = true) {
     if (!part) continue;
 
     if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
-      out.push(`<strong>${escapeHTML(part.slice(2, -2))}</strong>`);
+      add(part.slice(2, -2), { bold: true });
       continue;
     }
 
     if (!auto) {
-      out.push(escapeHTML(part));
+      add(part);
       continue;
     }
 
@@ -71,16 +80,29 @@ export function renderText(text, mute = [], auto = true) {
     while ((m = METRIC_RE.exec(part)) !== null) {
       if (!isMetric(m[0])) continue;
       const i = autoIndex++;
-      out.push(escapeHTML(part.slice(last, m.index)));
-      const cls = muted.has(i) ? 'cv-metric cv-metric--off' : 'cv-metric';
-      const tag = muted.has(i) ? 'span' : 'strong';
-      out.push(`<${tag} class="${cls}" data-metric="${i}">${escapeHTML(m[0])}</${tag}>`);
+      add(part.slice(last, m.index));
+      const off = muted.has(i);
+      add(m[0], { bold: !off, metric: i, muted: off });
       last = m.index + m[0].length;
     }
-    out.push(escapeHTML(part.slice(last)));
+    add(part.slice(last));
   }
 
-  return out.join('');
+  return runs;
+}
+
+/**
+ * Turn authored text into HTML.
+ * @returns {string} HTML
+ */
+export function renderText(text, mute = [], auto = true) {
+  return textRuns(text, mute, auto).map(r => {
+    const body = escapeHTML(r.text);
+    if (r.metric == null) return r.bold ? `<strong>${body}</strong>` : body;
+    const cls = r.muted ? 'cv-metric cv-metric--off' : 'cv-metric';
+    const tag = r.muted ? 'span' : 'strong';
+    return `<${tag} class="${cls}" data-metric="${r.metric}">${body}</${tag}>`;
+  }).join('');
 }
 
 /** How many auto-metrics does this text contain? Used by the editor UI. */
@@ -108,7 +130,15 @@ export function countMetrics(text) {
 
    Past both floors the text is simply too long. Rather than crush it further,
    the bullet is handed its space back and flagged, and the editor asks for it
-   to be shortened. */
+   to be shortened.
+
+   The order is right for the screen and wrong for Word, which is why the word
+   floor is a parameter. Word has no word-spacing control, so docx.js can only
+   carry the letter-spacing — and on a real CV lever 1 does nearly all the work
+   (41 of 45 bullets fitted on word-spacing alone), which the export then throws
+   away. The bullet arrives in Word at its natural width and wraps. So the DOCX
+   passes wordFloor = 0 and buys the whole fit in the currency it can actually
+   spend. See docx.js. */
 
 const WORD_FLOOR = -1.0;    // pt, absorbed by justification
 const TRACK_FLOOR = -0.40;  // pt, visible
@@ -124,11 +154,23 @@ const TRACK_STEP = 0.02;
    Because bullets are `text-align-last: justify` a fitting line is always
    stretched to full width, so the box cannot tell us how much room is left.
    Ask the question that matters instead: would this still be one line in a
-   column a pixel narrower? If not, keep compressing. */
+   column a pixel narrower? If not, keep compressing.
+
+   The margin is a parameter because the DOCX needs a much bigger one: Word sets
+   the same string a little wider than Chrome does, so a bullet fitted to the
+   pixel here still wraps there — and with `jc="distribute"` a wrapped line gets
+   its last word stretched across the whole column. See docx.js. */
 const SAFETY_PX = 1;
 
-/** @returns {string[]} ids of bullets that still need shortening */
-export function fitBulletsToOneLine(root) {
+/**
+ * @param {Element} root
+ * @param {number} safetyPx  headroom to leave; bigger for the DOCX than the DOM
+ * @param {number} wordFloor how much word-spacing may be spent, in pt. 0 turns
+ *                           the lever off entirely, so letter-spacing — the only
+ *                           one Word understands — has to buy the whole fit.
+ * @returns {string[]} ids of bullets that still need shortening
+ */
+export function fitBulletsToOneLine(root, safetyPx = SAFETY_PX, wordFloor = WORD_FLOOR) {
   const tooLong = [];
 
   for (const el of root.querySelectorAll('.cv-bullet')) {
@@ -141,14 +183,14 @@ export function fitBulletsToOneLine(root) {
     /* margin-right shortens the line box, so this is the same measurement the
        print path would make against a hair less room. */
     const tight = () => {
-      el.style.marginRight = `${SAFETY_PX}px`;
+      el.style.marginRight = `${safetyPx}px`;
       const bad = wraps();
       el.style.marginRight = '';
       return bad;
     };
 
     if (tight()) {
-      for (let w = -WORD_STEP; w >= WORD_FLOOR && tight(); w -= WORD_STEP) {
+      for (let w = -WORD_STEP; w >= wordFloor && tight(); w -= WORD_STEP) {
         el.style.wordSpacing = `${w.toFixed(2)}pt`;
       }
       for (let t = -TRACK_STEP; t >= TRACK_FLOOR && tight(); t -= TRACK_STEP) {

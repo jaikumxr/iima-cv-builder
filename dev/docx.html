@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DOCX harness</title>
+<link rel="stylesheet" href="../css/cv.css">
+<style>
+  html, body { margin: 0; background: #111; color: #0f0; }
+  #out { font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; padding: 10px 14px; margin: 0; }
+  #stage { position: absolute; left: -10000px; top: 0; }
+</style>
+</head>
+<body>
+<pre id="out">building…</pre>
+<div id="stage"></div>
+<script type="module">
+/* Builds the DOCX from a sample and checks everything that can be checked
+   without Word: that every XML part parses, that the relationship graph
+   resolves, that the table's cell widths add up to the grid, and that the ZIP
+   itself is well formed. `?b64=1` also dumps the file so it can be pulled out
+   headlessly and opened for real. */
+import { SAMPLES } from '../js/samples.js';
+import { MASTHEAD, PAGE_MARGIN_MM, mastheadMM, logoMM, tableTopMM, bulletKey, bulletSize } from '../js/schema.js';
+import { ensureFonts } from '../js/render.js';
+import { buildDocx, measureAtFullSize, loadLogo } from '../js/docx.js';
+
+const params = new URLSearchParams(location.search);
+const which = params.get('sample') || 'dark';
+const out = document.getElementById('out');
+const log = [];
+const say = (...a) => { log.push(a.join(' ')); out.textContent = log.join('\n'); };
+
+let fails = 0;
+const check = (ok, label, detail = '') => {
+  if (!ok) fails++;
+  say(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? '  — ' + detail : ''}`);
+};
+
+try {
+  await ensureFonts();
+  /* ?cv=<url> builds from an exported CV instead of a sample — the samples
+     have generous bullets, so a real CV is the only way to exercise the
+     tracking that keeps Word from wrapping them. */
+  const src = params.get('cv');
+  const cv = src ? await (await fetch(src)).json()
+                 : structuredClone(SAMPLES[which].data);
+  /* ?density=1.3 — the spacing control is the one setting that changes row
+     heights, so both ends of its range need exercising against real Word. */
+  if (params.has('density')) cv.theme.density = params.get('density');
+  if (params.has('bullet')) cv.theme.bullet = params.get('bullet');
+  /* ?split=1 — the three-part org bar. Off in both samples, so this is what
+     puts a centre tab stop in the document for the checks below to find. */
+  if (params.has('split'))
+    for (const s of cv.sections) if (s.kind === 'experience') s.splitBar = params.get('split') !== '0';
+
+  const measured = measureAtFullSize(cv);
+  say(`sample        ${src || which}   bullet=${bulletKey(cv)}pt`);
+  say(`at fixed 10pt ${measured.usedMM.toFixed(1)}mm of 297mm` +
+      (measured.overMM > 0 ? `  OVER by ${measured.overMM.toFixed(1)}mm` : `  (${(-measured.overMM).toFixed(1)}mm spare)`));
+  const tw = [...measured.tracking.values()].map(px => Math.round(px * 0.75 * 20));
+  say(`tracked       ${measured.tracking.size} bullets carry letter-spacing` +
+      (tw.length ? `  (w:spacing ${Math.min(...tw)}..${Math.max(...tw)} twentieths)` : ''));
+  say(`too long      ${measured.tooLong.length}`);
+  say(`fills         ${JSON.stringify(measured.fills)}`);
+
+  /* Geometry cross-check: the width Chrome fitted the bullets to, against the
+     width the DOCX actually gives them. If these disagree, a Word wrap is our
+     arithmetic; if they agree, it is font metrics. */
+  let wordFit = null;
+  {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;left:-10000px;top:0;width:210mm;visibility:hidden';
+    document.body.appendChild(probe);
+    const pg = (await import('../js/render.js')).renderCV(cv, probe);
+    const b = pg.querySelector('.cv-bullet');
+    const pad = parseFloat(getComputedStyle(b).paddingLeft);
+    say(`bullet width  Chrome ${((b.clientWidth - pad) / (96/25.4)).toFixed(2)}mm of text (line box, indent excluded)`);
+
+    /* Will these bullets be one line in *Word*? Word never sees the negative
+       word-spacing the screen fit spends, so the only honest question is
+       whether each bullet fits at its natural width carrying nothing but the
+       <w:spacing> we are about to write — quantised exactly as bulletParas
+       quantises it. Measured against Chrome's line box, which is ~0.9mm
+       narrower than the DOCX column, so it errs on the safe side. */
+    const PXMM = 96 / 25.4;
+    let worst = Infinity, worstText = '', over = 0;
+    const spares = [];
+    for (const el of pg.querySelectorAll('.cv-bullet')) {
+      const twentieths = Math.floor((measured.tracking.get(el.dataset.bullet) || 0) * 0.75 * 20);
+      const box = (el.clientWidth - parseFloat(getComputedStyle(el).paddingLeft)) / PXMM;
+      const c = el.cloneNode(true);
+      c.style.cssText = 'position:absolute;white-space:nowrap;width:auto;padding:0;visibility:hidden;' +
+                        `text-align:left;text-align-last:left;word-spacing:0;letter-spacing:${twentieths / 20}pt`;
+      el.parentNode.appendChild(c);
+      const nat = c.scrollWidth / PXMM;
+      c.remove();
+      const spare = box - nat;
+      if (spare < 0) over++;
+      spares.push({ mm: spare, t: el.textContent });
+      if (spare < worst) { worst = spare; worstText = el.textContent.slice(0, 48); }
+    }
+    wordFit = { worst, worstText, over };
+    /* The five tightest, not just the worst: the samples are supposed to run
+       close to the full column (samples.js), and one number cannot tell you
+       whether they do. Anything with a lot of spare is a bullet demonstrating
+       nothing. */
+    spares.sort((a, b) => a.mm - b.mm);
+    const n = params.has('spares') ? spares.length : 5;
+    say('tightest      ' + spares.slice(0, n)
+      .map(s => `${s.mm.toFixed(1)}mm "${s.t.slice(0, 46)}"`).join('\n              '));
+    say(`spare spread  min ${spares[0].mm.toFixed(1)}  ` +
+        `median ${spares[spares.length >> 1].mm.toFixed(1)}  ` +
+        `max ${spares[spares.length - 1].mm.toFixed(1)}mm  (?spares=1 lists all)`);
+    probe.remove();
+  }
+
+  const { bytes, ext } = await loadLogo(cv);
+  say(`logo          ${bytes ? `${bytes.length} bytes (.${ext})` : 'MISSING'}`);
+
+  const blob = buildDocx(cv, measured, bytes, ext);
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  say(`docx          ${buf.length} bytes\n`);
+
+  /* --- unzip in the page, so the checks run against the real artefact --- */
+  const dv = new DataView(buf.buffer);
+  const parts = new Map();
+  let i = 0;
+  while (i + 4 <= buf.length && dv.getUint32(i, true) === 0x04034B50) {
+    const nameLen = dv.getUint16(i + 26, true);
+    const extraLen = dv.getUint16(i + 28, true);
+    const size = dv.getUint32(i + 18, true);
+    const start = i + 30 + nameLen + extraLen;
+    const name = new TextDecoder().decode(buf.subarray(i + 30, i + 30 + nameLen));
+    parts.set(name, buf.subarray(start, start + size));
+    i = start + size;
+  }
+  say(`parts (${parts.size}):`);
+  for (const [name, data] of parts) say(`    ${name.padEnd(34)} ${String(data.length).padStart(7)} bytes`);
+  say('');
+
+  {
+    const W2 = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    const d2 = new DOMParser().parseFromString(
+      new TextDecoder().decode(parts.get('word/document.xml')), 'application/xml');
+    const cell = [...d2.getElementsByTagNameNS(W2, 'jc')]
+      .find(j => j.getAttributeNS(W2, 'val') === 'distribute')?.closest('tc');
+    const w = Number(cell?.getElementsByTagNameNS(W2, 'tcW')[0]?.getAttributeNS(W2, 'w') || 0);
+    say(`              DOCX   ${(w * 25.4 / 1440).toFixed(2)}mm cell, ` +
+        `${((w - 57 - 28 - 176) * 25.4 / 1440).toFixed(2)}mm of text after margins + indent
+`);
+  }
+
+  /* The one that catches the Word wrap. Every bullet must be one line on its
+     emitted tracking alone — no word-spacing, because Word has none. */
+  check(wordFit.over === 0, `every bullet fits Word's line on <w:spacing> alone`,
+        `${wordFit.over} would wrap; tightest has ${wordFit.worst.toFixed(2)}mm spare — “${wordFit.worstText}”`);
+
+  const REQUIRED = ['[Content_Types].xml', '_rels/.rels', 'word/document.xml',
+                    'word/styles.xml', 'word/numbering.xml', 'word/header1.xml',
+                    'word/_rels/document.xml.rels', 'word/_rels/header1.xml.rels'];
+  for (const r of REQUIRED) check(parts.has(r), `part present: ${r}`);
+
+  /* --- every XML part must parse --- */
+  const dp = new DOMParser();
+  const docs = new Map();
+  for (const [name, data] of parts) {
+    if (!name.endsWith('.xml') && !name.endsWith('.rels')) continue;
+    const text = new TextDecoder().decode(data);
+    const doc = dp.parseFromString(text, 'application/xml');
+    const err = doc.querySelector('parsererror');
+    check(!err, `well-formed: ${name}`, err ? err.textContent.slice(0, 90) : '');
+    docs.set(name, doc);
+  }
+
+  /* --- relationship targets must exist --- */
+  const relCheck = (relPart, base) => {
+    const doc = docs.get(relPart);
+    if (!doc) return;
+    for (const rel of doc.querySelectorAll('Relationship')) {
+      const t = rel.getAttribute('Target');
+      if (/^https?:/.test(t)) continue;
+      const resolved = (base ? base + '/' : '') + t;
+      check(parts.has(resolved), `rel target exists: ${t}`, resolved);
+    }
+  };
+  relCheck('_rels/.rels', '');
+  relCheck('word/_rels/document.xml.rels', 'word');
+  relCheck('word/_rels/header1.xml.rels', 'word');
+
+  /* --- the grid: gridCol total, and every row's cells summing to it --- */
+  const doc = docs.get('word/document.xml');
+  const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+  const gridCols = [...doc.getElementsByTagNameNS(W, 'gridCol')]
+    .map(n => Number(n.getAttributeNS(W, 'w')));
+  const gridTotal = gridCols.reduce((a, b) => a + b, 0);
+  check(gridCols.length >= 6, `tblGrid has at least the 6 base columns`, String(gridCols.length));
+  check(gridTotal === 10466, `grid totals 10466 twip (184.6mm exactly)`, String(gridTotal));
+  check(gridCols.every(w => w > 0), `no zero-width grid column`, gridCols.join(','));
+
+  const rows = [...doc.getElementsByTagNameNS(W, 'tr')];
+  let widthMismatch = 0, spanMismatch = 0;
+  for (const tr of rows) {
+    const tcs = [...tr.children].filter(c => c.localName === 'tc');
+    let w = 0, span = 0;
+    for (const tc of tcs) {
+      const tcW = tc.getElementsByTagNameNS(W, 'tcW')[0];
+      const gs = tc.getElementsByTagNameNS(W, 'gridSpan')[0];
+      w += Number(tcW?.getAttributeNS(W, 'w') || 0);
+      span += gs ? Number(gs.getAttributeNS(W, 'val')) : 1;
+    }
+    if (Math.abs(w - gridTotal) > 6) widthMismatch++;
+    if (span !== gridCols.length) spanMismatch++;
+  }
+  check(widthMismatch === 0, `every row's tcW sums to the grid`, `${widthMismatch} of ${rows.length} off`);
+  check(spanMismatch === 0, `every row divides the grid exactly`, `${spanMismatch} of ${rows.length} off`);
+
+  /* --- vMerge must open with restart and be continued, never orphaned --- */
+  const merges = [...doc.getElementsByTagNameNS(W, 'vMerge')];
+  const restarts = merges.filter(m => m.getAttributeNS(W, 'val') === 'restart').length;
+  check(merges.length === 0 || restarts > 0, `vMerge runs start with a restart`,
+        `${restarts} restart / ${merges.length} total`);
+
+  /* --- fixed type: no run may carry a size other than the three allowed --- */
+  const sizes = new Set([...doc.getElementsByTagNameNS(W, 'sz')].map(n => n.getAttributeNS(W, 'val')));
+  check([...sizes].every(s => s === '20'), `every body run is sz=20 (10pt)`, [...sizes].join(','));
+
+  const hdr = docs.get('word/header1.xml');
+  const hSizes = [...hdr.getElementsByTagNameNS(W, 'sz')].map(n => n.getAttributeNS(W, 'val'));
+  check(hSizes.includes('40'), `masthead name is sz=40 (20pt)`, hSizes.join(','));
+  check(hSizes.length < 2 || hSizes.includes('28'), `masthead meta is sz=28 (14pt)`, hSizes.join(','));
+  {
+    const fonts = new Set([...hdr.getElementsByTagNameNS(W, 'rFonts')].map(n => n.getAttributeNS(W, 'ascii')));
+    check([...fonts].every(f => f === 'Garamond'), `masthead is Garamond, not Centaur`, [...fonts].join(','));
+  }
+
+  /* --- page geometry --- */
+  const pgSz = doc.getElementsByTagNameNS(W, 'pgSz')[0];
+  const pgMar = doc.getElementsByTagNameNS(W, 'pgMar')[0];
+  check(pgSz?.getAttributeNS(W, 'w') === '11906' && pgSz?.getAttributeNS(W, 'h') === '16838', 'pgSz is A4');
+  check(['top', 'right', 'bottom', 'left'].every(s => pgMar?.getAttributeNS(W, s) === '720'),
+        'pgMar is 720 twip (0.5in) all round');
+
+  /* w:header is NOT the 720 the source uses, and that is deliberate. It is the
+     only lever for where the masthead's name sits: Word gives a 20pt Garamond
+     Bold line a fixed first-baseline offset (NAME_FIRST_BASELINE, 5.96mm,
+     measured off Word's own rendering) and w:header places that line on the
+     page. It tracks the measured ink ascent of this CV's actual name, which is
+     what makes the capitals land on the margin. */
+  {
+    const expected = Math.round((PAGE_MARGIN_MM + measured.ink.ascentMM - 5.96) * 1440 / 25.4);
+    check(Math.abs(Number(pgMar?.getAttributeNS(W, 'header')) - expected) <= 1,
+          `w:header puts the name's ink on the top margin (expect ${expected})`,
+          pgMar?.getAttributeNS(W, 'header'));
+  }
+  check(pgMar?.getAttributeNS(W, 'footer') === '340', 'w:footer is 340 (source value)',
+        pgMar?.getAttributeNS(W, 'footer'));
+
+  /* The gap under the name comes from the table being page-anchored, not from
+     the header's height. Flowing it after the header ties the gap to the name's
+     font metrics and collapses it when w:header is 0. */
+  const tblpPr = doc.getElementsByTagNameNS(W, 'tblpPr')[0];
+  check(tblpPr?.getAttributeNS(W, 'vertAnchor') === 'page', 'table is anchored to the page',
+        tblpPr?.getAttributeNS(W, 'vertAnchor'));
+  {
+    const want = Math.round(tableTopMM(cv) * 1440 / 25.4);
+    check(tblpPr?.getAttributeNS(W, 'tblpY') === String(want),
+          `table sits at tblpY=${want} (${tableTopMM(cv).toFixed(2)}mm)`,
+          tblpPr?.getAttributeNS(W, 'tblpY'));
+  }
+
+  /* At tblInd 0 Word measures the indent to the first cell's *text*, so the
+     table's border hangs the left cell margin out past the page margin —
+     measured at 1.14mm outside it before this was set. */
+  {
+    const tblInd = doc.getElementsByTagNameNS(W, 'tblInd')[0];
+    check(tblInd?.getAttributeNS(W, 'w') === '57',
+          `tblInd is the left cell margin, so the border lands on the page margin`,
+          tblInd?.getAttributeNS(W, 'w') ?? 'absent');
+  }
+
+  /* The logo fills the band and nothing else: flush to the top margin, flush
+     to the right one, square. */
+  {
+    const EMU_MM = 914400 / 25.4;
+    const ext = hdr.getElementsByTagName('wp:extent')[0];
+    const cx = Number(ext?.getAttribute('cx') || 0) / EMU_MM;
+    const cy = Number(ext?.getAttribute('cy') || 0) / EMU_MM;
+    check(Math.abs(cx - logoMM(cv)) < 0.02 && Math.abs(cy - logoMM(cv)) < 0.02,
+          `logo is a ${logoMM(cv).toFixed(2)}mm square filling the band`,
+          `${cx.toFixed(2)} x ${cy.toFixed(2)}mm`);
+    const posH = Number(hdr.getElementsByTagName('wp:posOffset')[0]?.textContent || 0) / EMU_MM;
+    check(Math.abs((posH + logoMM(cv)) - 184.6) < 0.05,
+          `logo's right edge is flush to the right margin`,
+          `${(posH + logoMM(cv)).toFixed(2)}mm of 184.60`);
+  }
+
+  /* The masthead must clear the floating table — measured from the real
+     w:header, not a hardcoded 720, which is what made this pass while the name
+     was sitting on the bar. The header paragraph carries no w:line by design
+     (an exact line would make Word crop a 23pt name), so hdrH is 0 and Word's
+     own single spacing decides the height. */
+  const headerTop = Number(pgMar?.getAttributeNS(W, 'header') || 0);
+  const tblpY = Number(tblpPr?.getAttributeNS(W, 'tblpY') || 0);
+  const hdrH = [...hdr.getElementsByTagNameNS(W, 'spacing')]
+    .reduce((a, n) => a + Number(n.getAttributeNS(W, 'line') || 0), 0);
+  check(headerTop + hdrH <= tblpY, `masthead clears the table (${headerTop}+${hdrH} <= ${tblpY})`);
+  check(hdrH === 0, `header paragraph sets no exact line (Word would crop the name)`, `w:line total ${hdrH}`);
+
+  /* The name's ink top, in Word's terms: w:header plus the 5.96mm first
+     baseline offset it gives a 20pt Garamond Bold line, less this name's own
+     measured ink ascent. Guards the whole masthead in one number — if the
+     header position regresses, or the paragraph gains spacing, or the DOCX
+     stops reading the measurement, the name stops being flush and this moves. */
+  const baselineMM = headerTop * 25.4 / 1440 + 5.96;
+  const tableMM = tblpY * 25.4 / 1440;
+  const inkTopMM = baselineMM - measured.ink.ascentMM;
+  check(Math.abs(inkTopMM - PAGE_MARGIN_MM) < 0.06,
+        `the name's capitals sit on the top margin, not above it`,
+        `ink top ${inkTopMM.toFixed(2)}mm of ${PAGE_MARGIN_MM}`);
+  say(`              masthead: ink top ${inkTopMM.toFixed(2)}mm, baseline ${baselineMM.toFixed(2)}mm, ` +
+      `table ${tableMM.toFixed(2)}mm, band ${mastheadMM(cv).toFixed(2)}mm of ${MASTHEAD.min}..${MASTHEAD.max}`);
+
+  /* The other axis. The correction is the first capital's left side bearing,
+     measured off the rendered page, and without it Garamond's "J" put the name
+     0.25mm outside the left margin. */
+  {
+    const ind = hdr.getElementsByTagNameNS(W, 'ind')[0];
+    const want = Math.round(measured.ink.shiftMM * 1440 / 25.4);
+    check(Math.abs(Number(ind?.getAttributeNS(W, 'left') || 0) - want) <= 1,
+          `header w:ind pulls the name's ink onto the left margin (expect ${want})`,
+          ind?.getAttributeNS(W, 'left') ?? '0');
+  }
+
+  /* Bullets are real list markers. A literal "•" in the text is what let
+     jc="distribute" carry the dot out of line on a bullet with slack. */
+  {
+    const nums = doc.getElementsByTagNameNS(W, 'numPr').length;
+    const bullets = [...doc.getElementsByTagNameNS(W, 'jc')]
+      .filter(n => n.getAttributeNS(W, 'val') === 'distribute').length;
+    check(nums === bullets && nums > 0,
+          `every bullet is a numPr list marker, not a typed "•"`, `${nums} numPr / ${bullets} distribute`);
+    check(!doc.documentElement.textContent.includes('•'),
+          `document.xml contains no literal bullet character`);
+    const numbering = docs.get('word/numbering.xml');
+    const lvlSz = numbering?.getElementsByTagNameNS(W, 'sz')[0]?.getAttributeNS(W, 'val');
+    const lvlFont = numbering?.getElementsByTagNameNS(W, 'rFonts')[0]?.getAttributeNS(W, 'ascii');
+    const lvlText = numbering?.getElementsByTagNameNS(W, 'lvlText')[0]?.getAttributeNS(W, 'val');
+    /* The marker's size is the CV's own setting (schema.js BULLET_SIZES), and
+       cv.css draws the same rung through --bullet-fs. It may never exceed the
+       body's sz=20: a marker larger than the text inflates every bullet line in
+       the preview while Word ignores it, so the two would disagree by ~10mm. */
+    const wantB = bulletSize(cv);
+    check(Number(lvlSz) <= 20, `the marker is not larger than the body text`, `sz=${lvlSz} of 20`);
+    check(lvlSz === String(wantB.sz) && lvlFont === 'Symbol' && lvlText === '',
+          `the marker is Symbol F0B7 at sz=${wantB.sz} (${wantB.pt}pt), as cv.css draws it`,
+          `${lvlFont} ${lvlSz} U+${(lvlText || '?').codePointAt(0).toString(16).toUpperCase()}`);
+    /* The marker's font must not reach the text: only Garamond runs in the body. */
+    const bodyFonts = new Set([...doc.getElementsByTagNameNS(W, 'rFonts')].map(n => n.getAttributeNS(W, 'ascii')));
+    check([...bodyFonts].every(f => f === 'Garamond'),
+          `bullet text stays Garamond — Symbol is the marker only`, [...bodyFonts].join(','));
+  }
+
+  /* The three-part org bar. Word puts the role on a centre tab stop at half the
+     cell's *text* width — the cell less both cell margins — and cv.css centres
+     .cv-bar__role on that same x. If either side starts measuring against the
+     row's box instead, the role moves 0.26mm and the two stop agreeing.
+
+     The contact row uses a centre stop at the identical position, so it is
+     counted in: every role plus that one, and nothing else. */
+  {
+    const mid = Math.round((10466 - 57 - 28) / 2);
+    const centres = [...doc.getElementsByTagNameNS(W, 'tab')]
+      .filter(t => t.getAttributeNS(W, 'val') === 'center');
+    const roles = cv.sections
+      .filter(s => s.enabled && s.kind === 'experience' && s.splitBar)
+      .flatMap(s => s.entries || [])
+      .filter(e => (e.role || '').trim()).length;
+    const footer = !!(cv.contact.phone || cv.contact.address || cv.contact.email);
+    check(centres.length === roles + (footer ? 1 : 0),
+          `one centre tab per split-bar role${footer ? ', plus the contact row' : ''}`,
+          `${centres.length} found, ${roles + (footer ? 1 : 0)} expected (?split=1 turns them on)`);
+    check(centres.every(t => t.getAttributeNS(W, 'pos') === String(mid)),
+          `every centre tab is at half the cell's text width (${mid})`,
+          [...new Set(centres.map(t => t.getAttributeNS(W, 'pos')))].join(','));
+  }
+
+  /* Section headings are capitals in the *text*, so the export cannot disagree
+     with the preview the way a CSS text-transform let it. */
+  {
+    const titles = [...doc.getElementsByTagNameNS(W, 't')].map(n => n.textContent);
+    const wanted = cv.sections.filter(s => s.enabled).map(s => s.title.toUpperCase());
+    const missing = wanted.filter(t => !titles.some(x => x.includes(t)));
+    check(missing.length === 0, `section headings are capitalised in the DOCX`,
+          missing.length ? `missing: ${missing.slice(0, 3).join(' | ')}` : '');
+  }
+
+  say('');
+  say(fails ? `${fails} CHECK(S) FAILED` : 'all checks passed');
+  document.title = fails ? `${fails} failed` : 'ok';
+
+  if (params.has('b64')) {
+    let bin = '';
+    for (const b of buf) bin += String.fromCharCode(b);
+    say('\nBASE64:' + btoa(bin));
+  }
+} catch (e) {
+  say('THREW: ' + (e && e.stack || e));
+  document.title = 'threw';
+}
+</script>
+</body>
+</html>

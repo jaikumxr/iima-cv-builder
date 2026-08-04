@@ -3,7 +3,9 @@
    leak in here; interaction affordances live in app.css under :not(print). */
 
 import { renderText, fitBulletsToOneLine, fitSingleLine, measureNaturalWidths } from './metrics.js';
-import { visibleSections, DENSITIES, BORDERS, COLUMNS, defaultColumns } from './schema.js';
+import { visibleSections, density, bulletSize, barParts, BORDERS, COLUMNS, defaultColumns, sectionTitle, mastheadMM, PAGE_MARGIN_MM } from './schema.js';
+
+const PX_PER_MM = 96 / 25.4;
 
 const el = (tag, cls, html) => {
   const n = document.createElement(tag);
@@ -33,8 +35,12 @@ const LOGO_URL = new URL('../assets/img/iima-logo.png', import.meta.url).href;
    every measurement lands on fallback metrics. Ask for each face explicitly. */
 export async function ensureFonts() {
   if (!document.fonts) return;
-  const faces = ['400 10pt "CV Body"', '700 10pt "CV Body"', '700 23pt "CV Name"'];
+  const faces = ['400 10pt "CV Body"', '700 10pt "CV Body"', '700 20pt "CV Body"'];
   await Promise.all(faces.map(f => document.fonts.load(f).catch(() => {})));
+  /* The bullet marker. Its @font-face has a unicode-range of exactly F0B7, so
+     load() has to be given a string containing that character or it matches
+     nothing and resolves without requesting the face. */
+  await document.fonts.load('10pt "CV Bullet"', '').catch(() => {});
   await document.fonts.ready;
 }
 
@@ -58,6 +64,56 @@ function renderHead(cv) {
 }
 
 const escapeText = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+/* One canvas, reused: measureText runs on every render. */
+let ctx2d = null;
+const measureCtx = () => (ctx2d ||= document.createElement('canvas').getContext('2d'));
+
+/* Sit the masthead's *ink* flush in the page's top-left margin corner.
+
+   Both corrections are properties of the string, not of the font, which is why
+   they are measured here every render instead of being tabulated as constants:
+   actualBoundingBoxAscent is how far this particular name's tallest ink rises
+   above its baseline (an accented capital rises further than a plain one), and
+   actualBoundingBoxLeft is how far its first glyph's ink hangs left of its own
+   origin — in the Word export Garamond's "J" put the name 0.25mm outside the
+   margin that way.
+
+   The line-height falls out of the baseline. `.cv-head__id` is absolutely
+   positioned at the band's top with a single line in it, and every inline box
+   on that line is `lh` tall and centred on its own font's content area, so
+
+     baseline − elementTop = lh/2 + max_i( ascent_i − (ascent_i+descent_i)/2 )
+
+   over the boxes on the line, the tallest winning. We want the ink top at the
+   element top, i.e. baseline − elementTop = inkAscent, so lh = 2(inkAscent − h).
+   That factor of two is the trap the old hard-coded constant documented at
+   length; deriving it keeps it right now that the masthead's font and size have
+   both changed. */
+function mastheadFlush(page) {
+  const id = page.querySelector('.cv-head__id');
+  if (!id) return { ascentMM: 0, shiftMM: 0 };
+  const nameEl = page.querySelector('.cv-head__name');
+  const metaEl = page.querySelector('.cv-head__meta');
+  const c = measureCtx();
+
+  let inkAscent = 0, halfLead = 0, inkLeft = 0;
+  for (const node of [id, nameEl, metaEl]) {
+    if (!node) continue;
+    const cs = getComputedStyle(node);
+    c.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    // the strut (id itself) contributes its leading but carries no ink of its own
+    const m = c.measureText(node === id ? '' : node.textContent || '');
+    const { fontBoundingBoxAscent: fa, fontBoundingBoxDescent: fd } = m;
+    halfLead = Math.max(halfLead, fa - (fa + fd) / 2);
+    if (node !== id) inkAscent = Math.max(inkAscent, m.actualBoundingBoxAscent);
+    if (node === nameEl) inkLeft = m.actualBoundingBoxLeft;
+  }
+
+  page.style.setProperty('--name-lh', `${(2 * (inkAscent - halfLead) / PX_PER_MM).toFixed(3)}mm`);
+  page.style.setProperty('--name-shift', `${(inkLeft / PX_PER_MM).toFixed(3)}mm`);
+  return { ascentMM: inkAscent / PX_PER_MM, shiftMM: inkLeft / PX_PER_MM };
+}
 
 /* ---------- bullets ---------- */
 
@@ -129,6 +185,13 @@ const renderBlock = (block, cv, opts) =>
 
 /* ---------- section bodies ---------- */
 
+/* The centred role of a split bar. Appended to the *row*, not to a cell, so it
+   is positioned against the whole row's text area — the centre Word's tab stop
+   uses. See barParts in schema.js and .cv-bar__role in cv.css. */
+function addRole(row, role) {
+  if (role && role.trim()) row.appendChild(el('span', 'cv-bar__role', escapeText(role)));
+}
+
 function renderExperience(section, cv, sheet) {
   for (const entry of section.entries) {
     // with inlineBar the first entry's org/dates were folded into the section
@@ -137,11 +200,13 @@ function renderExperience(section, cv, sheet) {
       for (const block of entry.blocks) sheet.appendChild(renderBlock(block, cv, { showYear: section.showYear }));
       continue;
     }
-    if (entry.org || entry.dates) {
+    if (entry.org || entry.role || entry.dates) {
+      const { main, role } = barParts(entry.org, entry.role, section.splitBar);
       const bar = el('div', 'cv-row cv-row--bar');
       bar.dataset.entry = entry.id;
-      bar.appendChild(cell('cv-bar__main', escapeText(entry.org || '')));
+      bar.appendChild(cell('cv-bar__main', escapeText(main)));
       bar.appendChild(cell('cv-bar__dates', escapeText(entry.dates || '')));
+      addRole(bar, role);
       sheet.appendChild(bar);
     }
     for (const block of entry.blocks) {
@@ -209,10 +274,16 @@ export function renderCV(cv, mount) {
 
   const page = el('div', `cv-page theme-${cv.theme.id || 'ink'}`);
   page.id = 'cvPage';
-  page.style.setProperty('--lh-body', (DENSITIES[cv.theme.density] || DENSITIES.normal).lh);
+  page.style.setProperty('--lh-body', density(cv).lh);
   page.style.setProperty('--rule-w', (BORDERS[cv.theme.border] || BORDERS.thin).w);
+  /* One marker size for the whole CV. docx.js spends the same rung as
+     numbering.xml's w:sz, so the dot cannot differ between the two. */
+  page.style.setProperty('--bullet-fs', bulletSize(cv).em);
   const cols = { ...defaultColumns(), ...(cv.theme.cols || {}) };
   for (const c of COLUMNS) page.style.setProperty(c.cssVar, `${cols[c.key]}mm`);
+  /* The band between the top margin and the table. The logo is sized from it
+     in CSS; docx.js spends the same number as tblpY. */
+  page.style.setProperty('--header-h', `${mastheadMM(cv)}mm`);
   page.appendChild(renderHead(cv));
 
   const sheet = el('div', 'cv-sheet');
@@ -223,12 +294,14 @@ export function renderCV(cv, mount) {
     // "inline bar": fold the first entry's org + dates into the heading row,
     // so the section reads as one continuous bar (see the light sample)
     const inline = section.inlineBar && section.kind === 'experience' && section.entries[0];
-    const title = `<span class="cv-section__title">${escapeText(section.title)}</span>`;
+    const title = `<span class="cv-section__title">${escapeText(sectionTitle(section.title))}</span>`;
 
     if (inline) {
       const e = section.entries[0];
-      bar.appendChild(cell('cv-bar__main', e.org ? `${title} <span class="cv-section__org">${escapeText(e.org)}</span>` : title));
+      const { main, role } = barParts(e.org, e.role, section.splitBar);
+      bar.appendChild(cell('cv-bar__main', main ? `${title} <span class="cv-section__org">${escapeText(main)}</span>` : title));
       bar.appendChild(cell('cv-bar__dates', escapeText(e.dates || '')));
+      addRole(bar, role);
     } else {
       bar.appendChild(cell('cv-cell--content', title));
     }
@@ -242,66 +315,82 @@ export function renderCV(cv, mount) {
   page.appendChild(sheet);
   mount.appendChild(page);
 
-  fitToOnePage(page, cv);   // owns the relayout passes, incl. bullet fitting
+  /* Needs the page in the document: it reads computed fonts off the masthead's
+     own spans rather than restating --fs-name/--fs-meta here, so the two can
+     never disagree. Stashed for docx.js, which spends the same two numbers as
+     w:header and the header paragraph's w:ind. */
+  const flush = mastheadFlush(page);
+  page.dataset.nameAscentMM = flush.ascentMM.toFixed(3);
+  page.dataset.nameShiftMM = flush.shiftMM.toFixed(3);
+
+  layoutPasses(page);       // tracking and year alignment — never type size
   return page;
 }
 
-/* ---------- the one-page guarantee ----------
-   A CV that spills onto page 2 is a failed CV, so overflow is corrected rather
-   than merely reported. Order matters: letter-spacing first (free, invisible),
-   then a uniform type scale, which is the only lever that always converges.
+/* ---------- layout passes ----------
+   **Type size is fixed and is never scaled.** The CV is Garamond 10pt in the
+   body and 20pt/14pt in the masthead, and one that arrives at 9.5pt has failed
+   the format even if it fits on one page.
 
-   Binary search rather than stepping down: each probe costs a full reflow, and
-   7 probes resolve the scale to ~0.2%, which is below the threshold where a
-   reader would notice. MIN_SCALE is the point where 10pt Garamond stops being
-   comfortably legible in print — past it we stop and tell the truth instead of
-   shrinking into unreadability. */
+   This used to binary-search a uniform `--fs-scale` down to 0.78 whenever the
+   page overflowed, which is why the fit meter could say "type scaled to 95% to
+   make room". That is gone: overflow is now *reported*, not silently absorbed,
+   and the only automatic remedy is tracking, which does not change type size.
+   `--fs-scale` stays pinned at 1 — see cv.css, where the token remains only so
+   the mm constants derived from it keep their shape.
 
-const MIN_SCALE = 0.78;
-const PROBES = 7;
+   The passes still have to run in this order, and alignYears still has to run:
+   pinning each year to its bullet's height can grow a row, so a measurement
+   taken without it under-reports the page. */
 
-function fitToOnePage(page, cv) {
+function layoutPasses(page) {
   page.style.setProperty('--fs-scale', 1);
   page.dataset.fitScale = '1';
-  page.dataset.fitFailed = '';
 
+  fitSingleLine(page);
+  const tooLong = fitBulletsToOneLine(page);
+  alignYears(page);
+  placeBarRoles(page);
 
-  /* Every probe must reproduce the *final* layout exactly, alignYears included:
-     pinning each year to its bullet's height can grow a row, so measuring
-     without it lets the search accept a scale that then overflows. */
-  let tooLong = [];
-  const relayout = () => {
-    fitSingleLine(page);
-    tooLong = fitBulletsToOneLine(page);
-    alignYears(page);
-  };
-  const fits = () => { relayout(); return measureFit(page).overMM <= 0; };
-  const finish = () => { page.dataset.tooLong = tooLong.join(' '); };
+  page.dataset.tooLong = tooLong.join(' ');
+  page.dataset.fitFailed = measureFit(page).overMM > 0 ? '1' : '';
+}
 
-  if (fits()) { finish(); return; }   // fits() relayouts, not just measures
+/* A split bar's role sits on the row's centre line, because in Word it sits on
+   a centre tab stop there. But a tab cannot move the pen backwards: when the
+   organisation already runs past that stop, Word does not shift the role to the
+   next stop — it butts it straight onto the end of the organisation with no gap
+   at all. Measured, in Word, on both samples with ?split=1: "Zeptonic Systems
+   Private Limited (30 Months)Product Analyst II (PPO-UG)".
 
-  let lo = MIN_SCALE, hi = 1, best = null;
-  for (let i = 0; i < PROBES; i++) {
-    const mid = (lo + hi) / 2;
-    page.style.setProperty('--fs-scale', mid);
-    if (fits()) { best = mid; lo = mid; } else { hi = mid; }
+   So the preview does the same. It looks wrong, and it is meant to: the export
+   looks exactly as wrong, and the fix is a shorter organisation or role, which
+   the author can only make if the preview stops hiding the collision behind a
+   centred overprint. */
+function placeBarRoles(page) {
+  for (const role of page.querySelectorAll('.cv-bar__role')) {
+    role.style.left = '';
+    role.style.transform = '';
+    delete role.dataset.butted;
+
+    const row = role.parentElement;
+    const inner = row.querySelector('.cv-bar__main .cv-cell__in');
+    if (!inner || !inner.textContent.trim()) continue;
+    const range = document.createRange();
+    range.selectNodeContents(inner);
+    const orgRight = range.getBoundingClientRect().right;
+    if (orgRight <= role.getBoundingClientRect().left) continue;
+
+    role.style.left = `${orgRight - row.getBoundingClientRect().left}px`;
+    role.style.transform = 'none';
+    role.dataset.butted = '1';
   }
-
-  // `best` stays null only when even MIN_SCALE overflows — genuinely too much
-  // content. Hold at the floor so the output is at least readable, and let the
-  // fit meter say so rather than silently clipping.
-  const scale = best ?? MIN_SCALE;
-  page.style.setProperty('--fs-scale', scale);
-  page.dataset.fitScale = String(scale);
-  page.dataset.fitFailed = best === null ? '1' : '';
-  relayout();
-  finish();
 }
 
 /* Per-bullet years sit in their own column, so a bullet that wraps to two
    lines would push every year below it out of step. Match each year's height
    to its bullet's actual height instead of trusting a shared line-height. */
-function alignYears(page) {
+export function alignYears(page) {
   for (const list of page.querySelectorAll('.cv-year__list')) {
     const row = list.closest('.cv-row');
     const bullets = row?.querySelectorAll(':scope > .cv-cell--content .cv-bullet');
