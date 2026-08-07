@@ -1,6 +1,6 @@
 # IIMA CV Builder
 
-Write an IIM Ahmedabad summers CV in your browser and download it as a PDF or a
+Write an IIM Ahmedabad CV in your browser and download it as a PDF or a
 Word file. The formatting is fixed to the IIMA one-page format, so you only
 have to write the words.
 
