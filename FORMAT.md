@@ -194,10 +194,51 @@ at the indent, outside the text being justified, and cannot move.
 
 It is **Symbol's `F0B7`** — Word's own bullet — while the bullet's *text* stays
 Garamond 10 pt. Garamond's own `U+2022` is a much smaller dot and read as
-undersized. `cv.css` draws the identical glyph from `local("Symbol")`, confined
-by `unicode-range` to that one codepoint so the family cannot leak into other
-text. The content must be the private-use `F0B7`: asking for `U+2022` in Symbol
-falls through to the next family and quietly gives Garamond's small dot back.
+undersized. The content must be the private-use `F0B7`: asking for `U+2022` in
+Symbol falls through to the next family and quietly gives Garamond's small dot
+back.
+
+### The marker font is bundled, and `local()` must not be in front of it
+
+```css
+src: url("../assets/fonts/symbol.ttf") format("truetype");
+```
+
+The marker used to be `local("Symbol")` alone, and on a machine without that
+glyph every bullet in the CV rendered as an empty **tofu box** — a private-use
+codepoint has no fallback anywhere, so nothing else on the machine had anything
+at `U+F0B7`. The PDF failed with it, being Chrome printing the same DOM; only
+the DOCX escaped, because it names the font and Word resolves it on the reader's
+own machine.
+
+**Bundling the file fixes it only if `local()` is removed, not merely demoted.**
+`src` is a list of *sources*, not of glyph providers: the browser takes the first
+source that **loads** and stops there. `local()` matches on family name alone, so
+a machine with a font called Symbol that lacks `U+F0B7` loads it, satisfies the
+`@font-face`, finds no glyph, and falls through to the next *family* — Garamond,
+which has nothing there either. Tofu, with the correct file downloaded and
+unused.
+
+That is not hypothetical, and it is the machine that reported this: macOS ships
+a family called Symbol that is Unicode-encoded with no private-use area.
+Reproduced by pointing `local()` at a font that exists locally and lacks the
+glyph — the marker came back **1.72 × 2.22 mm, aspect 0.78**, a box rather than
+a 1.223 mm circle. So `local()` is gone and the bundled file is the only source.
+
+Machines that were already fine are unaffected: it is the same `symbol.ttf`, so
+the dot is identical to what a Windows install drew from its own copy — measured
+at **0.000 mm** on diameter and both axes of position. The cost is one 69 KB
+download, cached, on a page that already ships a megabyte of Garamond.
+
+**The file has no Unicode cmap and works regardless.** `symbol.ttf` carries a
+(1,0) Mac table and a (3,0) *symbol-encoded* one, and only the latter holds
+`F0B7` — fontTools' `getBestCmap()` returns nothing for it. Blink reads (3,0)
+subtables in webfonts, so the request resolves. Verified by pointing the
+`local()` source at a name that does not exist: the bundled fallback drew the dot
+to **0.000 mm** of the system font's, on diameter and both axes of position.
+
+Note what this adds to the licensing question below: `symbol.ttf` is a Microsoft
+font, so the public deploy now redistributes two of them rather than one.
 
 **Do not size the marker above body size.** Its inline box is `line-height × its
 own font-size`, so a `1.05em` marker made *every* bullet line 5% taller than the
@@ -230,8 +271,14 @@ element uses it, so `ready` resolves instantly and every measurement lands on
 fallback metrics. `ensureFonts()` in `render.js` asks for each face by name
 first — do not remove it.
 
-`Garamond-*.ttf` come from a local Microsoft Office install. **Check the licence
-before making a deploy public.**
+`Garamond-*.ttf` and `symbol.ttf` come from a local Microsoft Office / Windows
+install, and the deploy is public, so it is redistributing all three. **This is
+outstanding, not settled.** The bullet marker is the one with an easy way out if
+it ever has to go: it is a plain filled circle, so a ~1 KB font holding one
+drawn glyph substitutes for it exactly — measured at 0.000 mm against the real
+Symbol. Nothing open-licensed has the glyph ready-made; `github.com/microsoft/
+fonts` holds Selawik and `winjs-symbols`, an Apache-2.0 UI icon font whose 213
+glyphs sit in `U+E018..U+E700` with no `U+F0B7`, no `U+2022` and no `U+25CF`.
 
 ## Structure
 

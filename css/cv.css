@@ -46,16 +46,53 @@
    is what made the bullets read as undersized in the PDF, in Word and on screen
    alike.
 
-   Not bundled: it is `local("Symbol")`, the font every Windows install has had
-   since 3.1 and the one Word resolves `w:ascii="Symbol"` against, so the
-   preview draws the identical glyph the export asks for. The unicode-range
-   confines it to that single codepoint, so the family cannot leak into any
-   other text, and F0B7 is in the private use area precisely because Symbol is
-   a symbol-encoded font — asking for U+2022 in it silently falls through to the
-   next family and gives Garamond's small dot back. */
+   F0B7 is in the private use area precisely because Symbol is a symbol-encoded
+   font — asking for U+2022 in it silently falls through to the next family and
+   gives Garamond's small dot back.
+
+   **There is no `local("Symbol")` here, and that is the whole fix.** It is the
+   obvious thing to put first — it saves the download on every machine that has
+   the font Word itself resolves — and it is exactly what was broken:
+
+     `src` is a list of *sources*, not of glyph providers. The browser takes the
+     first source that **loads**, and stops. `local()` matches on family name
+     alone, so a machine with a font called Symbol that does not happen to
+     contain U+F0B7 loads it, satisfies the @font-face, finds no glyph, and
+     falls through to the next *family* — Garamond, which has nothing there
+     either. Tofu, with the correct file sitting downloaded and unused.
+
+     That is not hypothetical. macOS ships a family called Symbol that is
+     Unicode-encoded and has no private-use area, which is precisely the machine
+     that reported this. Reproduced here by pointing local() at a font that
+     exists locally and lacks the glyph: the marker came back 1.72 x 2.22mm,
+     aspect 0.78 — a tofu box, not a 1.223mm circle.
+
+   So the bundled file is the only source. Every machine renders the same glyph,
+   including the ones that were already fine: it is the same symbol.ttf, so the
+   dot is identical to what a Windows install was drawing from its own copy —
+   measured at 0.000mm on diameter and both axes. The cost is one 69KB download,
+   cached, against a page that already ships a megabyte of Garamond.
+
+   The failure it removes:
+
+     - a private-use codepoint has no fallback anywhere. With no glyph at
+       U+F0B7, nothing else on the machine has *anything* there, so every bullet
+       in the CV renders as an empty tofu box rather than as some other dot.
+     - the PDF fails with it, being Chrome printing this same DOM. Only the DOCX
+       escaped, because it names the font and Word resolves it on the reader's
+       own machine.
+
+   **The file has no Unicode cmap**, and it works anyway. symbol.ttf carries a
+   (1,0) Mac table and a (3,0) *symbol-encoded* one, and only the (3,0) table
+   holds F0B7 — fontTools' `getBestCmap()` returns nothing for this font at all.
+   Blink reads (3,0) subtables in webfonts, so the request resolves. Worth
+   knowing before anyone "cleans up" this file or subsets it.
+
+   The unicode-range confines the face to that single codepoint, so it cannot
+   leak into any other text. */
 @font-face {
   font-family: "CV Bullet";
-  src: local("Symbol");
+  src: url("../assets/fonts/symbol.ttf") format("truetype");
   unicode-range: U+F0B7;
 }
 

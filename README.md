@@ -207,8 +207,10 @@ sent anywhere.
 ## For developers
 
 The layout is not eyeballed — every measurement was read out of real IIMA CVs'
-Word files and PDFs. Those measurements, the reasoning behind them, and the
-things that are easy to break are in **[FORMAT.md](FORMAT.md)**.
+Word files and PDFs. Those measurements live as constants in `css/cv.css`
+and `js/schema.js` — with the provenance in the comments — and both renderers
+read them from there,
+so change a number in one place and both the preview and the Word export follow.
 
 ```
 index.html        the app
