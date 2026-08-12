@@ -129,6 +129,43 @@
   </div>
 </dialog>
 
+<!-- Import opens this rather than the file picker, because most people arriving
+     at it have a PDF and no idea a .json is wanted. "Copy the prompt" lifts the
+     instructions straight out of IMPORT.md at runtime — the file is the only
+     copy of them, so what is pasted into ChatGPT can never drift from what the
+     repo says. -->
+<dialog id="importIntro" class="dlg dlg--wide">
+  <h2>Bring in a CV you already have</h2>
+  <ol>
+    <li>Press <strong>Copy the prompt</strong>.</li>
+    <li>Open <strong>ChatGPT</strong>, <strong>Claude</strong> or <strong>Gemini</strong>.
+        Paste it, and attach your CV.</li>
+    <li>Save its reply as a file ending in <code>.json</code>.</li>
+    <li>Come back here and press <strong>Choose file</strong>.</li>
+  </ol>
+
+  <div class="dlg-actions">
+    <button type="button" class="tb-btn dlg-actions__lead" id="importPromptCopy">Copy the prompt</button>
+    <button type="button" class="tb-btn" id="importIntroCancel">Cancel</button>
+    <button type="button" class="tb-btn tb-btn--primary" id="importIntroGo">Choose file</button>
+  </div>
+</dialog>
+
+<!-- The import gate's report. A CV can now arrive written by an LLM working
+     from IMPORT.md rather than by this app's own Export, so a file that is
+     turned away has to say what is wrong in terms whoever — or whatever —
+     wrote it can act on. That is what Copy is for: paste the report back and
+     ask for a corrected file. -->
+<dialog id="importReport" class="dlg dlg--wide">
+  <h2 id="importReportTitle"></h2>
+  <p id="importReportLead"></p>
+  <pre id="importReportBody" class="dlg-log"></pre>
+  <div class="dlg-actions">
+    <button type="button" class="tb-btn" id="importReportCopy">Copy report</button>
+    <button type="button" class="tb-btn tb-btn--primary" id="importReportClose">Close</button>
+  </div>
+</dialog>
+
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

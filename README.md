@@ -35,7 +35,7 @@ a filled-in CV, then press **New** when you want to start your own.
 | **gridlines** | Draws Word's grid and the page margins over the preview, so you can check nothing sits outside the margins. A viewing aid only — it never appears in the PDF or the Word file. |
 | **Load sample…** | Fills the builder with one of two example CVs. This replaces what you have. |
 | **New** | Empties everything and starts a blank CV. |
-| **Import / Export** | Saves your CV to a `.json` file, or loads one back. Use this to move between computers or keep a backup. This is *not* the CV itself — for that, use the two buttons below. |
+| **Import / Export** | Saves your CV to a `.json` file, or loads one back. Use this to move between computers or keep a backup. This is *not* the CV itself — for that, use the two buttons below. **Already have a CV as a PDF or Word file?** Import explains how to bring it in. |
 | **Download DOCX** | The Word file. |
 | **Download PDF** | The PDF. This is the one to send to recruiters. |
 
@@ -191,6 +191,21 @@ substitute other fonts and the line breaks will move.
 
 ---
 
+## Already have a CV?
+
+Press **Import**. The screen that opens explains the whole thing and has a
+**Copy the prompt** button: paste that into ChatGPT, Claude or Gemini, attach
+your existing CV — PDF or Word — and it writes the `.json` file that **Choose
+file** then reads.
+
+If the result is not quite right, nothing is imported and you get a report
+saying exactly what and where. Paste that back into the same chat and ask for a
+corrected file.
+
+The prompt is [IMPORT.md](IMPORT.md) if you would rather copy it by hand.
+
+---
+
 ## Your data
 
 Your CV lives in your browser's local storage on this computer only. It is not
@@ -198,7 +213,8 @@ sent anywhere.
 
 - **Export** writes it to a `.json` file — your backup, and how you move it
   between machines.
-- **Import** reads one back.
+- **Import** reads one back. It checks the file first: if something is wrong it
+  tells you exactly what and where, and imports nothing rather than half a CV.
 - **Reset saved data** (top of the left pane) clears the browser's copy. There
   is no undo for that, so export first.
 
@@ -223,6 +239,7 @@ js/metrics.js     auto-bolding and the one-line-per-bullet fitting
 js/docx.js        the Word export, written as raw OOXML
 js/zip.js         a minimal ZIP writer, so the DOCX needs no library
 js/store.js       saving, undo, import/export
+js/validate.js    the import gate — checks and repairs an incoming .json
 js/samples.js     the two example CVs — invented, not real people
 dev/preview.html  1:1 rendering harness with every measurement printed
 dev/docx.html     builds a DOCX and checks it part by part

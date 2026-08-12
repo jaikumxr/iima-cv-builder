@@ -3,6 +3,7 @@
 import { SECTION_CATALOGUE, LAYOUT_PRESETS, THEMES, DENSITIES, BORDERS, BULLET_SIZES, COLUMNS, COLUMN_STEP, MASTHEAD, densityKey, bulletKey, defaultColumns, mastheadMM, applyLayout, mkSection, blankCV } from './schema.js';
 import { SAMPLES } from './samples.js';
 import { createStore, loadSaved, clearSaved, exportJSON, importJSON } from './store.js';
+import { validateCV, formatReport, explainParseError } from './validate.js';
 import { createEditor, locate } from './editor.js';
 import { renderCV, measureFit, ensureFonts, measureNaturalWidths, tooLongBullets } from './render.js';
 import { buildDocx, measureAtFullSize, loadLogo } from './docx.js';
@@ -356,15 +357,170 @@ $('#btnExport').addEventListener('click', () => {
   exportJSON(store.get(), `${name}.cv.json`);
 });
 
-$('#btnImport').addEventListener('click', async () => {
+/* ---------- import ----------
+   Import used to accept anything carrying a `version` field, which was fine
+   while the only thing that ever wrote one of these files was Export. A CV can
+   now be written by an LLM from IMPORT.md, so the file gets checked before it
+   is allowed near normalise() — which assumes shapes and throws on a cluster
+   with no groups — and the findings are reported rather than swallowed. See
+   validate.js for what is an error and what is only a warning. */
+
+/* navigator.clipboard needs a secure context, which https and localhost both
+   are — so the deploy and `npm run dev` are covered and a page opened straight
+   off the disk is not. The textarea route is deprecated and is still the only
+   thing that works there. It has to be appended inside the open dialog: a
+   modal puts itself in the top layer and everything behind it goes inert, so a
+   textarea on <body> cannot take the selection. */
+async function copyToClipboard(text) {
   try {
-    const data = await importJSON();
-    store.replace(normalise(data));
-    syncToolbar();
-    editor.render();
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch { /* fall through */ }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+  ($('dialog[open]') || document.body).appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  ta.remove();
+  return ok;
+}
+
+/** Say what happened on the button itself, then put its own label back. */
+function flash(btn, msg) {
+  btn.dataset.label ??= btn.textContent;
+  btn.textContent = msg;
+  clearTimeout(Number(btn.dataset.timer));
+  btn.dataset.timer = String(setTimeout(() => { btn.textContent = btn.dataset.label; }, 2600));
+}
+
+/* The prompt is read out of IMPORT.md at runtime rather than kept as a string
+   here, so there is exactly one copy of it and the button cannot paste a stale
+   schema into someone's chat window. **The heading below is a parse target**:
+   everything above it in that file addresses the user, everything from it down
+   addresses the model. Renaming it silently breaks this button. */
+const PROMPT_URL = new URL('../IMPORT.md', import.meta.url).href;
+const PROMPT_HEADING = '# Instructions for the assistant';
+let promptText = null;
+
+async function loadPrompt() {
+  if (promptText) return promptText;
+  const res = await fetch(PROMPT_URL);
+  if (!res.ok) throw new Error(`IMPORT.md returned ${res.status}`);
+  const md = await res.text();
+  const at = md.indexOf(PROMPT_HEADING);
+  if (at < 0) throw new Error(`IMPORT.md has no "${PROMPT_HEADING}" heading`);
+  return (promptText = md.slice(at).trim());
+}
+
+const introDlg = $('#importIntro');
+const reportDlg = $('#importReport');
+
+function showImportReport(title, lead, body, { bad = false } = {}) {
+  $('#importReportTitle').textContent = title;
+  $('#importReportLead').textContent = lead;
+  const pre = $('#importReportBody');
+  pre.textContent = body;
+  pre.className = bad ? 'dlg-log dlg-log--bad' : 'dlg-log';
+  reportDlg.showModal();
+}
+
+$('#importReportClose').addEventListener('click', () => reportDlg.close());
+$('#importReportCopy').addEventListener('click', async e => {
+  const ok = await copyToClipboard($('#importReportBody').textContent);
+  flash(e.currentTarget, ok ? 'Copied' : 'Could not copy. Select it and press Ctrl+C');
+});
+
+/* Import opens this first. Most people reaching for it have a PDF, not a
+   .json, and the file picker alone says nothing about how to get one. */
+$('#btnImport').addEventListener('click', () => {
+  introDlg.showModal();
+  // warm the fetch while the instructions are being read, so Copy is instant
+  loadPrompt().catch(() => { /* reported when the button is actually pressed */ });
+});
+
+$('#importIntroCancel').addEventListener('click', () => introDlg.close());
+
+/* One button, and the user attaches one file. The prompt carries a worked
+   example inside itself, which is what actually teaches the format — an
+   assistant shown a CV in this shape needs eight lines of instruction instead
+   of ten pages of schema. Two earlier attempts are worth not repeating: a
+   second button that downloaded an example, and pointing at Export to produce
+   one. Export writes *whatever CV is loaded*, so anyone who pressed New first
+   would have handed the assistant an empty CV as its format reference. */
+
+$('#importPromptCopy').addEventListener('click', async e => {
+  const btn = e.currentTarget;
+  try {
+    const ok = await copyToClipboard(await loadPrompt());
+    flash(btn, ok ? 'Copied' : 'Could not copy. The prompt is in IMPORT.md');
   } catch (err) {
-    if (err && err.message !== 'No file chosen') alert(`Could not import: ${err.message}`);
+    /* No link to point at: the dialog is four steps and nothing else. */
+    flash(btn, 'Could not load the prompt. It is in IMPORT.md');
+    console.error(err);
   }
+});
+
+$('#importIntroGo').addEventListener('click', async () => {
+  introDlg.close();
+  let raw;
+  try {
+    raw = await importJSON();
+  } catch (err) {
+    if (err && err.message === 'No file chosen') return;
+    showImportReport(
+      'That file could not be read',
+      'Nothing was imported and your CV is untouched. Copy this and paste it back into the chat that wrote the file.',
+      explainParseError(err && err.text, err).map(l => `  • ${l}`).join('\n'),
+      { bad: true });
+    return;
+  }
+
+  const result = validateCV(raw);
+  const report = formatReport(result);
+
+  if (!result.ok) {
+    showImportReport(
+      'This file is not a CV this builder can open',
+      'Nothing was imported and your CV is untouched. If an LLM wrote this file, copy the report below and paste it back with your CV. Everything here names the exact place to fix.',
+      report, { bad: true });
+    return;
+  }
+
+  store.replace(normalise(result.data));
+  syncToolbar();
+  editor.render();
+
+  /* An import is a *verbatim* copy — the assistant is told to change nothing —
+     so a CV arriving over one page is the normal case and not a fault. Say so
+     with the numbers the renderer has just measured, rather than a guess made
+     before it was drawn: what has to be cut, and how many bullets will not fit
+     their line. Cutting is the author's, exactly as it is everywhere else. */
+  const fit = currentPage ? measureFit(currentPage) : null;
+  const longCount = currentPage ? tooLongBullets(currentPage).length : 0;
+  const trims = [];
+  if (fit && fit.overMM > 0) {
+    trims.push(`the CV runs ${fit.overMM.toFixed(1)}mm past one page. About ${Math.ceil(fit.overMM / LINE_MM)} line(s) to cut`);
+  }
+  if (longCount) {
+    trims.push(`${longCount} bullet(s) are too long for one line, each marked ⚠ Reduce text in the editor`);
+  }
+
+  if (!trims.length && !result.warnings.length) return;
+
+  const body = [
+    ...(trims.length ? ['Your CV came across word for word, so there is trimming to do:',
+                        ...trims.map(t => `  • ${t}`), ''] : []),
+    ...(result.warnings.length ? [report] : [])
+  ].join('\n').trimEnd();
+
+  showImportReport(
+    trims.length ? 'Imported. Now trim it to one page' : `Imported. ${result.warnings.length} thing(s) to check`,
+    trims.length
+      ? 'Nothing was shortened or reworded on the way in. Shorten the bullets you can afford to lose; the fit meter above the preview tracks it as you go.'
+      : 'The CV is on screen. These were repaired on the way in, or are worth a look.',
+    body);
 });
 
 $('#btnExpand').addEventListener('click', () => editor.expandAll());

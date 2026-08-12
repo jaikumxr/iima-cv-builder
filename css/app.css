@@ -362,6 +362,40 @@ textarea.ta {
 .dlg li { margin-bottom: 4px; }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
+/* The import dialogs. Wider than the other two because the report's lines each
+   name a path into the file, and wrapping those mid-path makes them
+   unreadable. Both can run long enough to need scrolling on a short window. */
+.dlg--wide { max-width: 680px; max-height: 88vh; overflow: auto; }
+.dlg--wide li { margin-bottom: 6px; }
+.dlg code {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 4px;
+  font: 12px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+.dlg a { color: var(--accent); }
+/* The two that fetch things sit away from the two that dismiss the dialog:
+   they are not a choice between them. `auto` on each keeps them adjacent and
+   pushes the pair left as a group. */
+   The gap goes on whatever follows the last of them, so the count can change
+   without the rule needing to know it. */
+.dlg-actions__lead + :not(.dlg-actions__lead) { margin-left: auto; }
+.dlg-log {
+  margin: 0;
+  max-height: 46vh;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink-dim);
+  font: 12px/1.6 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.dlg-log--bad { border-color: #55323a; }
+
 /* ---------- print ---------- */
 
 @media print {

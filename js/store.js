@@ -99,6 +99,11 @@ export function exportJSON(state, filename = 'cv.json') {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/* Reads and parses only. **Whether the contents are a usable CV is
+   validate.js's question, not this one's** — a file can now be written by an
+   LLM from IMPORT.md rather than by this app's own Export, and "does it have a
+   version field" is nowhere near enough of a check. Anything beyond a parse
+   error belongs in the report the caller shows. */
 export function importJSON() {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
@@ -109,11 +114,16 @@ export function importJSON() {
       if (!file) return reject(new Error('No file chosen'));
       const reader = new FileReader();
       reader.onload = () => {
+        const text = String(reader.result);
         try {
-          const data = JSON.parse(String(reader.result));
-          if (!data || !data.version) throw new Error('Not a CV Builder file');
-          resolve(data);
-        } catch (e) { reject(e); }
+          resolve(JSON.parse(text));
+        } catch (e) {
+          /* The file's text is carried on the error so the caller can say
+             *where* it went wrong — see explainParseError in validate.js.
+             Doing that here would drag the gate's job into the reader. */
+          e.text = text;
+          reject(e);
+        }
       };
       reader.onerror = () => reject(reader.error);
       reader.readAsText(file);

@@ -6,6 +6,6 @@
   "description": "One-page IIM Ahmedabad CV builder with pixel-accurate PDF export.",
   "scripts": {
     "dev": "npx --yes serve -l 5173 .",
-    "check": "node --check js/app.js && node --check js/editor.js && node --check js/render.js && node --check js/schema.js && node --check js/samples.js && node --check js/metrics.js && node --check js/store.js && node --check js/sortable.js"
+    "check": "node --check js/app.js && node --check js/editor.js && node --check js/render.js && node --check js/schema.js && node --check js/samples.js && node --check js/metrics.js && node --check js/store.js && node --check js/sortable.js && node --check js/validate.js"
   }
 }
