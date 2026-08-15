@@ -45,7 +45,7 @@ in by hand.
 # Instructions for the assistant
 
 Convert my CV, attached, into JSON in exactly the format of the example below.
-Reply with the JSON only, in one code block, and nothing else.
+Reply with the JSON only, which should be a downloadable JSON file, and nothing else.
 
 - **Copy every bullet word for word.** Do not rewrite, shorten, summarise,
   merge, split or drop anything.
